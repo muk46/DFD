@@ -18,11 +18,6 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- 👇 디버깅 명령어 추가 👇 ---
-# OpenCV 라이브러리가 의존하는 시스템 라이브러리 목록을 직접 출력해봅니다.
-RUN ldd $(python -c "import cv2; print(cv2.__file__)")
-# ---------------------------
-
 # 5. 나머지 프로젝트 소스 코드를 복사
 COPY . .
 
