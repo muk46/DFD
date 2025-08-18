@@ -1,0 +1,18 @@
+# Python 캐시 파일
+__pycache__/
+*.pyc
+
+# Anaconda 가상환경 폴더 (만약 있다면)
+/mintime_clean/
+
+# 대용량 데이터 및 결과물 폴더
+/videos/
+/boxes/
+/faces_output/
+/uploads/
+/outputs/
+/runs/
+
+# 모델 가중치 파일
+*.pt
+*.pth
