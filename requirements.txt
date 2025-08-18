@@ -14,7 +14,7 @@ flask
 gunicorn
 
 # Data & Utils
-numpy
+numpy==1.26.4
 pandas
 einops
 PyYAML
@@ -24,5 +24,6 @@ torch-optimizer
 scikit-learn
 tensorboard
 facenet-pytorch
+
 
 
