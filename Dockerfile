@@ -8,7 +8,7 @@ WORKDIR /app
 # && echo "--- apt-get install finished ---" 로 설치 완료 확인 메시지 추가
 RUN apt-get update && apt-get install -y \
     libmagic1 \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     --no-install-recommends && \
     echo "--- apt-get install finished ---" && \
