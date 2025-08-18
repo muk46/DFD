@@ -3,7 +3,7 @@ import random
 import cv2
 import numpy as np
 from albumentations import DualTransform, ImageOnlyTransform
-from albumentations.core.bbox_utils import Crop
+from albumentations.augmentations.functional import crop
 
 # Resize the image isotropically
 def isotropically_resize_image(img, size, interpolation_down=cv2.INTER_AREA, interpolation_up=cv2.INTER_CUBIC):
