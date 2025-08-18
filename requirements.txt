@@ -23,4 +23,5 @@ tqdm
 torch-optimizer
 scikit-learn
 tensorboard
+facenet-pytorch
 
