@@ -5,7 +5,7 @@ torchvision
 
 # Models & Augmentations
 timm
-albumentations
+albumentations==0.5.2
 opencv-python-headless
 ultralytics
 
@@ -24,4 +24,5 @@ torch-optimizer
 scikit-learn
 tensorboard
 facenet-pytorch
+
 
