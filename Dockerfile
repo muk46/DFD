@@ -21,8 +21,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 5. 나머지 프로젝트 소스 코드를 복사
 COPY . .
 
-# 6. Gunicorn이 사용할 포트 지정
-EXPOSE 8000
-
 # 7. 서버 실행 명령어 (Procfile의 역할)
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:$PORT", "app:app"]
