@@ -20,8 +20,12 @@ opt = argparse.Namespace(
     gpu_id=0,
     workers=0,
     config='config/size_invariant_timesformer.yaml',
-    model_weights='outputs/models/Model_checkpoint14.pth',
-    extractor_weights='outputs/models/Extractor_checkpoint14.pth',
+    # 1. model_weights 경로를 환경 변수에서 읽어오기
+    model_weights=os.getenv('MODEL_WEIGHTS_PATH', '/app/models/Model_checkpoint14.pth'), 
+    
+    # 2. extractor_weights 경로도 환경 변수에서 읽어오기
+    extractor_weights=os.getenv('EXTRACTOR_WEIGHTS_PATH', '/app/models/Extractor_checkpoint14.pth'),
+    
     output_type=0,
     save_attentions=False,
     extractor_model=2
