@@ -43,18 +43,25 @@ SIZE_EMB_DICT = [(1+i*RANGE_SIZE, (i+1)*RANGE_SIZE) if i != 0 else (0, RANGE_SIZ
 # ----------------------------------------
 # 1) 얼굴 탐지
 # ----------------------------------------
+# predict.py 파일의 detect_faces 함수
+
 def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
     """
     비디오에서 YOLOv8-face 기반으로 얼굴 박스를 탐지.
     반환: {프레임인덱스(int): [[x1,y1,x2,y2], ...] 또는 None}
     """
-    # 감지기 초기화 (클래스명을 문자열로 넘기는 기존 관례 유지)
-    detector = face_detector.__dict__[detector_cls](device=opt.gpu_id)
-
+    if torch.cuda.is_available() and opt.gpu_id >= 0:
+        device_for_detector = torch.device(f"cuda:{opt.gpu_id}")
+    else:
+        device_for_detector = torch.device("cpu")
+            
+    # ✅ 수정된 부분: opt.gpu_id 대신 device_for_detector를 전달합니다.
+    detector = face_detector.__dict__[detector_cls](device=device_for_detector)
+    
     # 비디오 로딩 (VideoDataset은 내부에서 640x480로 리사이즈하여 PIL Image 리스트 제공)
     dataset = VideoDataset([video_path])
     loader = DataLoader(dataset, shuffle=False, num_workers=0, batch_size=1, collate_fn=identity_collate_fn)
-
+    
     # 얼굴 탐지
     for item in loader:
         bboxes = {}
@@ -62,12 +69,12 @@ def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
         # indices: 원본 프레임 인덱스 리스트(int), frames: PIL 이미지(640x480)
         detections = detector._detect_faces(frames)  # 각 프레임별 박스 리스트 또는 None
         bboxes.update({i: b for i, b in zip(indices, detections)})
-
+        
         # 한 프레임이라도 리스트(검출 존재)인지 확인
         found_faces = any(isinstance(bboxes[k], list) and len(bboxes[k]) > 0 for k in bboxes)
         if not found_faces:
             raise Exception("No faces found.")
-
+            
     return bboxes
 
 # ----------------------------------------
