@@ -29,7 +29,6 @@ RUN pip install --no-cache-dir -r requirements.txt gdown
 
 # 7. 모델 다운로드
 RUN mkdir -p /app/models
-RUN wget -O /app/models/yolov8n-face.pt https://github.com/derronqi/yolov8-face/releases/download/v1.0/yolov8n-face.pt
 RUN gdown --id '1kP4I12SlN_2lEyr3Z1Lh4k-EyVtRdGwS' -O /app/models/Model_checkpoint14.pth
 RUN gdown --id '1bBNhCrV9KzZaJgp5xZ5Ir6E2ADy4OW-D' -O /app/models/Extractor_checkpoint14.pth
 
@@ -43,4 +42,4 @@ RUN chown -R user:user /app
 USER user
 
 # 11. 서버 실행 명령어
-CMD ["gunicorn", "--workers", "1", "--bind", "0.0.0.0:7860", "app:app"]
+CMD ["gunicorn", "--workers", "1", "--timeout", "300", "--bind", "0.0.0.0:7860", "app:app"]
