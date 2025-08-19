@@ -14,11 +14,18 @@ RUN apt-get update && apt-get install -y \
     echo "--- apt-get install finished ---" && \
     rm -rf /var/lib/apt/lists/*
 
-# 4. requirements.txt를 먼저 복사하여 라이브러리 설치 (캐시 활용)
+# 4. Hugging Face, matplotlib, Ultralytics 캐시 디렉토리 환경변수 설정
+ENV HF_HOME=/tmp/huggingface
+ENV TRANSFORMERS_CACHE=/tmp/huggingface
+ENV HF_HUB_CACHE=/tmp/huggingface
+ENV MPLCONFIGDIR=/tmp/matplotlib
+ENV YOLO_CONFIG_DIR=/tmp/ultralytics
+
+# 5. requirements.txt를 먼저 복사하여 라이브러리 설치 (캐시 활용)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. 나머지 프로젝트 소스 코드를 복사
+# 6. 나머지 프로젝트 소스 코드를 복사
 COPY . .
 
 # 7. 서버 실행 명령어 (Procfile의 역할)
