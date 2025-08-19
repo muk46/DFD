@@ -17,7 +17,7 @@ from predict import (
 opt = argparse.Namespace(
     detector_type='FacenetDetector',
     random_state=42,
-    gpu_id=0,
+    gpu_id=-1,
     workers=0,
     config='config/size_invariant_timesformer.yaml',
     # 1. model_weights 경로를 환경 변수에서 읽어오기
