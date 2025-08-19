@@ -37,4 +37,4 @@ RUN gdown --id '1bBNhCrV9KzZaJgp5xZ5Ir6E2ADy4OW-D' -O /app/models/Extractor_chec
 COPY . .
 
 # 7. 서버 실행 명령어 (Procfile의 역할)
-CMD ["gunicorn", "--bind", "0.0.0.0:3000", "app:app"]
+CMD ["gunicorn", "--workers", "1", "--threads", "1", "--timeout", "120", "--bind", "0.0.0.0:3000", "app:app"]
