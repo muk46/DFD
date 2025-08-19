@@ -25,6 +25,16 @@ ENV YOLO_CONFIG_DIR=/tmp/ultralytics
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 모델을 저장할 디렉토리 생성
+RUN mkdir -p /app/models
+
+# 1. TimeSformer 모델 다운로드 (YOUR_MODEL_FILE_ID를 실제 ID로 교체)
+RUN gdown --id 'https://drive.google.com/file/d/1kP4I12SlN_2lEyr3Z1Lh4k-EyVtRdGwS/view?usp=drive_link' -O /app/models/Model_checkpoint14.pth
+
+# 2. Extractor 모델 다운로드 (YOUR_EXTRACTOR_FILE_ID를 실제 ID로 교체)
+RUN gdown --id 'https://drive.google.com/file/d/1bBNhCrV9KzZaJgp5xZ5Ir6E2ADy4OW-D/view?usp=drive_link' -O /app/models/Extractor_checkpoint14.pth
+
+
 # 6. 나머지 프로젝트 소스 코드를 복사
 COPY . .
 
