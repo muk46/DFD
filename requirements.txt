@@ -24,6 +24,8 @@ torch-optimizer
 scikit-learn
 tensorboard
 facenet-pytorch
+pytorchvideo
+
 
 
 
