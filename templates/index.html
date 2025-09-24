@@ -56,12 +56,7 @@
                 <h3>최종 판별</h3>
                 <p id="predictionText"></p>
             </div>
-            <div class="heatmap">
-                <h3>XAI 분석 (히트맵)</h3>
-                <p id="heatmapDescription"></p>
-                <img id="heatmapImage" src="" alt="XAI Heatmap">
             </div>
-        </div>
     </div>
 </div>
 
@@ -96,8 +91,8 @@
     const loader = document.getElementById('loader');
     const resultsDiv = document.getElementById('results');
     const predictionText = document.getElementById('predictionText');
-    const heatmapImage = document.getElementById('heatmapImage');
-    const heatmapDescription = document.getElementById('heatmapDescription');
+    // const heatmapImage = document.getElementById('heatmapImage');
+    // const heatmapDescription = document.getElementById('heatmapDescription');
 
     form.addEventListener('submit', function(e) {
         e.preventDefault();
@@ -121,19 +116,19 @@
 
             const prediction = data.prediction;
             const isFake = data.is_fake;
-            const heatmapPath = data.heatmap_path;
+            // const heatmapPath = data.heatmap_path;
 
             if (isFake) {
                 predictionText.innerHTML = `FAKE <span class="fake">(${(prediction * 100).toFixed(2)}%)</span>`;
                 predictionText.className = 'fake';
-                heatmapDescription.innerHTML = "모델이 <strong>'의심스럽게'</strong> 본 영역입니다.";
+                // heatmapDescription.innerHTML = "모델이 <strong>'의심스럽게'</strong> 본 영역입니다.";
             } else {
                 predictionText.innerHTML = `REAL <span class="real">(${(1 - prediction) * 100}%)</span>`;
                 predictionText.className = 'real';
-                heatmapDescription.innerHTML = "모델이 <strong>'진짜임을 확인하기 위해 집중적으로 검토'</strong>한 영역입니다.";
+                // heatmapDescription.innerHTML = "모델이 <strong>'진짜임을 확인하기 위해 집중적으로 검토'</strong>한 영역입니다.";
             }
             
-            heatmapImage.src = heatmapPath + '?t=' + new Date().getTime();
+            // heatmapImage.src = heatmapPath + '?t=' + new Date().getTime();
         })
         .catch(error => {
             loader.style.display = 'none';
