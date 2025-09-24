@@ -2,128 +2,130 @@ import argparse
 import os
 import json
 import torch
-import shutil
-import pandas as pd
-from ultralytics import YOLO
-from multiprocessing.pool import Pool
-from tqdm import tqdm
-from functools import partial
-import cv2
 import sys
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
+import cv2
+from PIL import Image
+from ultralytics import YOLO
 
-if sys.platform.startswith('win'):
-    import multiprocessing
-    multiprocessing.freeze_support()
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class VideoDataset(Dataset):
-    def __init__(self, videos):
-        self.videos = videos
+    def __init__(self, video_paths, target_fps=5):
+        self.video_paths = video_paths
+        self.target_fps = target_fps
 
     def __len__(self):
-        return len(self.videos)
-        
-    def __getitem__(self, idx):
-        video_path = self.videos[idx]
-        video_name = os.path.basename(video_path)
-        
-        frames = []
-        try:
-            # OpenCV를 사용하여 비디오를 읽습니다.
-            cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
-            if not cap.isOpened():
-                print(f"Warning: Could not open video file {video_path} with cv2. Skipping.")
-                return video_name, None
+        return len(self.video_paths)
 
-            while cap.isOpened():
+    def __getitem__(self, idx):
+        video_path = self.video_paths[idx]
+        frames = []
+        original_indices = []
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"Warning: Could not open video file {video_path}")
+                return video_path, [], []
+
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            frames_num = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            frame_interval = max(1, round(fps / self.target_fps)) if fps > 0 else 1
+
+            for frame_id in range(frames_num):
                 ret, frame = cap.read()
                 if not ret:
                     break
-                frames.append(frame)
+                if frame_id % frame_interval == 0:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(frame_rgb)
+                    frames.append(pil_img)
+                    original_indices.append(frame_id)
             cap.release()
-            
-            if not frames:
-                print(f"Warning: No frames found in video {video_path}. Skipping.")
-                return video_name, None
-        
+            return video_path, frames, original_indices
         except Exception as e:
-            print(f"Warning: Error reading video {video_path}. Skipping. Error: {e}")
-            return video_name, None
-        
-        return video_name, frames
+            print(f"Error processing video {video_path}: {e}")
+            if 'cap' in locals() and cap.isOpened():
+                cap.release()
+            return video_path, [], []
 
-def process_videos(videos, opt):
-    device = torch.device('cuda:{}'.format(opt.gpu_id) if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # YOLO 모델 로드
-    model = YOLO('yolov8n-face.pt')
-    model.to(device)
-    model.eval()
-    
-    dataset = VideoDataset(videos)
-    loader = DataLoader(dataset, shuffle=False, num_workers=opt.workers, batch_size=1, collate_fn=lambda x: x)
-    
+
+def collate_fn(batch):
+    return batch[0]
+
+
+def main(opt):
+    detector = YOLO('yolov8n-face.pt').to(device).eval()
+
+    # ✅ 비디오 목록 읽기 + 중복 제거
+    with open(opt.list_file, 'r') as f:
+        video_files = [line.strip().split()[1] for line in f if line.strip()]
+    video_paths = list(dict.fromkeys([os.path.join(opt.data_path, fname) for fname in video_files]))
+
     os.makedirs(opt.output_path, exist_ok=True)
-    
-    bar = tqdm(loader, desc="비디오 얼굴 감지 중")
-    
-    for item in bar:
-        video_name, frames = item[0]
 
-        if frames is None:
+    # ❗ 변경점 1: 이미 처리된 '폴더'를 기준으로 제외하도록 수정
+    processed = {d for d in os.listdir(opt.output_path) if os.path.isdir(os.path.join(opt.output_path, d))}
+    video_paths = [vp for vp in video_paths if os.path.splitext(os.path.basename(vp))[0] not in processed]
+
+    print(f"실제로 처리할 비디오 수: {len(video_paths)}")
+
+    dataset = VideoDataset(video_paths, target_fps=opt.target_fps)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=opt.workers, collate_fn=collate_fn)
+
+    for video_path, frames, original_indices in tqdm(dataloader, desc="Detecting Faces"):
+        if not frames:
             continue
 
-        video_name_no_ext = os.path.splitext(video_name)[0]
-        output_dir = os.path.join(opt.output_path, video_name_no_ext)
+        # ❗ 변경점 2: 비디오 이름으로 폴더를 만들고, 그 안에 video.json으로 저장 경로 설정
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        output_dir = os.path.join(opt.output_path, video_name)
         os.makedirs(output_dir, exist_ok=True)
-        
-        results = model.predict(source=frames, device=device, stream=False, conf=0.5, iou=0.7, verbose=False)
-        
-        result = {}
-        for frame_idx, res in enumerate(results):
-            if res.boxes:
-                result[str(frame_idx)] = res.boxes.xyxy.cpu().numpy().tolist()
-        
-        with open(os.path.join(output_dir, "video.json"), "w") as f:
-            json.dump(result, f)
-        
-        found_faces = False
-        for key in result:
-            if isinstance(result[key], list) and len(result[key]) > 0:
-                found_faces = True
-                break
+        output_file = os.path.join(output_dir, "video.json")
 
-        if not found_faces:
-            print(f"Faces not found for {video_name}")
+        results = detector.predict(
+            frames,
+            conf=0.5,
+            iou=0.7,
+            device=device,
+            verbose=False,
+            stream=False,
+            batch=opt.batch_size,
+        )
 
-def main():
+        output_data = {}
+        score_threshold = 0.8
+        for i, res in enumerate(results):
+            boxes_xyxy = res.boxes.xyxy.cpu().numpy()
+            confs = res.boxes.conf.cpu().numpy()
+            high_conf_boxes = [box.tolist() for box, conf in zip(boxes_xyxy, confs) if conf > score_threshold]
+
+            if high_conf_boxes:
+                frame_idx = original_indices[i]
+                output_data[frame_idx] = high_conf_boxes
+
+        if output_data:
+            with open(output_file, 'w') as f:
+                json.dump(output_data, f)
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--list_file', default='./video_list.txt', type=str)
     parser.add_argument('--data_path', default='../videos', type=str)
     parser.add_argument('--output_path', default='../boxes', type=str)
     parser.add_argument('--gpu_id', default=0, type=int)
     parser.add_argument('--workers', default=0, type=int)
+    parser.add_argument('--target_fps', default=5, type=int, help='Frames per second to sample from video')
+    parser.add_argument('--batch_size', default=16, type=int, help='Batch size for YOLOv8 prediction')
+
     opt = parser.parse_args()
 
-    videos_paths = []
-    with open(opt.list_file, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                videos_paths.append(os.path.join(opt.data_path, parts[1].strip()))
+    if sys.platform.startswith('win'):
+        import multiprocessing
+        multiprocessing.freeze_support()
 
-    if os.path.exists(opt.output_path):
-        processed_videos = os.listdir(opt.output_path)
-        videos_paths = [v for v in videos_paths if os.path.splitext(os.path.basename(v))[0] not in processed_videos]
-
-    print(f"실제로 처리할 비디오 수: {len(videos_paths)}")
-
-    if not videos_paths:
-        print("Warning: No new videos to process. Exiting.")
-    else:
-        process_videos(videos_paths, opt)
-
-if __name__ == '__main__':
-    main()
+    main(opt)

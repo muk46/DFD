@@ -26,10 +26,18 @@ import sys
 import timm
 import torch.nn as nn
 import torch
+from imblearn.over_sampling import RandomOverSampler
+from torch.cuda.amp import autocast, GradScaler
 
 # --------------------------------
 # 유틸 함수
 # --------------------------------
+def collate_fn(batch):
+    batch = list(filter(lambda x: x is not None, batch))
+    if len(batch) == 0:
+        return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
 def set_seed(seed: int = 42):
     """랜덤 시드 고정 → 재현성 확보"""
     random.seed(seed)
@@ -135,13 +143,21 @@ if __name__ == "__main__":
     validation_videos = df_validation['video'].tolist()
     validation_labels = df_validation['label'].tolist()
     
-    train_samples = len(train_videos)
+    print(f"Original training data distribution: {collections.Counter(train_labels)}")
+    ros = RandomOverSampler(random_state=opt.random_state)
+    train_videos_np = np.array(train_videos).reshape(-1, 1)
+    resampled_train_videos_np, resampled_train_labels = ros.fit_resample(train_videos_np, train_labels)
+    resampled_train_videos = resampled_train_videos_np.flatten().tolist()
+    print(f"Resampled training data distribution: {collections.Counter(resampled_train_labels)}")
+
+    train_samples = len(resampled_train_videos)
     validation_samples = len(validation_videos)
 
     print("Train videos:", train_samples, "Validation videos:", validation_samples)
     print("__TRAINING STATS__")
-    train_counters = collections.Counter(train_labels)
+    train_counters = collections.Counter(resampled_train_labels)
     print(train_counters)
+    
     
     class_weights = train_counters.get(0, 1) / max(train_counters.get(1, 1), 1)
     print("Weights", class_weights)
@@ -155,11 +171,11 @@ if __name__ == "__main__":
     
     loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([class_weights]).to(device))
 
-    train_dataset = DeepFakesDataset(train_videos, train_labels, augmentation=config['training']['augmentation'], image_size=config['model']['image-size'], data_path=opt.data_path, video_path=opt.video_path, num_frames=config['model']['num-frames'], num_patches=num_patches, max_identities=config['model']['max-identities'])
-    train_dl = torch.utils.data.DataLoader(train_dataset, batch_size=config['training']['bs'], shuffle=True, num_workers=opt.workers)
+    train_dataset = DeepFakesDataset(resampled_train_videos, resampled_train_labels, augmentation=config['training']['augmentation'], image_size=config['model']['image-size'], data_path=opt.data_path, video_path=opt.video_path, num_frames=config['model']['num-frames'], num_patches=num_patches, max_identities=config['model']['max-identities'])
+    train_dl = torch.utils.data.DataLoader(train_dataset, batch_size=config['training']['bs'], shuffle=True, num_workers=opt.workers, collate_fn=collate_fn)
 
     validation_dataset = DeepFakesDataset(validation_videos, validation_labels, image_size=config['model']['image-size'], data_path=opt.data_path, video_path=opt.video_path, num_frames=config['model']['num-frames'], num_patches=num_patches, max_identities=config['model']['max-identities'], mode='val')
-    val_dl = torch.utils.data.DataLoader(validation_dataset, batch_size=config['training']['val_bs'], shuffle=False, num_workers=opt.workers)
+    val_dl = torch.utils.data.DataLoader(validation_dataset, batch_size=config['training']['val_bs'], shuffle=False, num_workers=opt.workers, collate_fn=collate_fn)
 
     scheduler = None
     if config['training']['scheduler'].lower() == 'steplr':
@@ -176,13 +192,20 @@ if __name__ == "__main__":
 
     starting_epoch = 0
     if os.path.exists(opt.resume):
-        model.load_state_dict(torch.load(opt.resume))
-        print(f"Resuming from checkpoint: {opt.resume}")
-    else:
-        print("No checkpoint loaded for the model.")
+        checkpoint = torch.load(opt.resume)
+        try:
+            features_extractor.load_state_dict(torch.load(opt.resume.replace("Model", "Extractor")))
+            print(f"Resuming feature extractor from: {opt.resume.replace('Model', 'Extractor')}")
+        except:
+            print("Warning: No extractor checkpoint found, starting fresh.")
+
+        model.load_state_dict(checkpoint)
+        print(f"Resuming main model from: {opt.resume}")
 
     not_improved_loss = 0
     previous_loss = math.inf
+
+    scaler = GradScaler()
     
     for t in range(starting_epoch, opt.num_epochs):
         model.train()
@@ -196,28 +219,35 @@ if __name__ == "__main__":
         train_correct = 0
         
         for data in tqdm(train_dl, desc=f"EPOCH #{t} [TRAIN]"):
+            if data is None:
+                continue
             videos, size_embeddings, masks, identities_masks, positions, labels = data
             
             labels = labels.unsqueeze(1).float().to(device)
             videos = videos.to(device)
             
-            videos_rearranged = rearrange(videos, "b f c h w -> (b f) c h w")
-            
-            features = features_extractor(videos_rearranged)
-            
-            b, f = videos.shape[0], videos.shape[1]
-            features = rearrange(features, '(b f) c h w -> b f c h w', b=b, f=f)
-            y_pred = model(features, mask=masks.to(device), size_embedding=size_embeddings.to(device), identities_mask=identities_masks.to(device), positions=positions.to(device))
-            
-            loss = loss_fn(y_pred, labels)
+            # --- [변경] autocast 컨텍스트 적용 ---
+            with autocast():
+                videos_rearranged = rearrange(videos, "b f c h w -> (b f) c h w")
+                features = features_extractor(videos_rearranged)
+                
+                b, f = videos.shape[0], videos.shape[1]
+                features = rearrange(features, '(b f) c h w -> b f c h w', b=b, f=f)
+                y_pred = model(features, mask=masks.to(device), size_embedding=size_embeddings.to(device), identities_mask=identities_masks.to(device), positions=positions.to(device))
+                
+                loss = loss_fn(y_pred, labels)
+            # --------------------------------------
             
             corrects, _, _ = check_correct(y_pred.cpu(), labels.cpu())
             train_correct += corrects
             total_loss += loss.item()
             
+            # --- [변경] scaler를 사용하여 역전파 및 업데이트 ---
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            # --------------------------------------------------
             
             if scheduler is not None and config['training']['scheduler'].lower() == 'cosinelr':
                 scheduler.step_update((t * len(train_dl) + index))

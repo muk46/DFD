@@ -27,6 +27,7 @@ from transforms.albu import IsotropicResize
 from models.size_invariant_timesformer import SizeInvariantTimeSformer
 from utils import aggregate_attentions, draw_border, save_attention_plots
 
+
 # ----------------------------------------
 # 전역 디바이스 설정
 # ----------------------------------------
@@ -43,18 +44,25 @@ SIZE_EMB_DICT = [(1+i*RANGE_SIZE, (i+1)*RANGE_SIZE) if i != 0 else (0, RANGE_SIZ
 # ----------------------------------------
 # 1) 얼굴 탐지
 # ----------------------------------------
+# predict.py 파일의 detect_faces 함수
+
 def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
     """
     비디오에서 YOLOv8-face 기반으로 얼굴 박스를 탐지.
     반환: {프레임인덱스(int): [[x1,y1,x2,y2], ...] 또는 None}
     """
-    # 감지기 초기화 (클래스명을 문자열로 넘기는 기존 관례 유지)
-    detector = face_detector.__dict__[detector_cls](device=opt.gpu_id)
-
+    if torch.cuda.is_available() and opt.gpu_id >= 0:
+        device_for_detector = torch.device(f"cuda:{opt.gpu_id}")
+    else:
+        device_for_detector = torch.device("cpu")
+            
+    # ✅ 수정된 부분: opt.gpu_id 대신 device_for_detector를 전달합니다.
+    detector = face_detector.__dict__[detector_cls](device=device_for_detector)
+    
     # 비디오 로딩 (VideoDataset은 내부에서 640x480로 리사이즈하여 PIL Image 리스트 제공)
     dataset = VideoDataset([video_path])
     loader = DataLoader(dataset, shuffle=False, num_workers=0, batch_size=1, collate_fn=identity_collate_fn)
-
+    
     # 얼굴 탐지
     for item in loader:
         bboxes = {}
@@ -62,12 +70,12 @@ def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
         # indices: 원본 프레임 인덱스 리스트(int), frames: PIL 이미지(640x480)
         detections = detector._detect_faces(frames)  # 각 프레임별 박스 리스트 또는 None
         bboxes.update({i: b for i, b in zip(indices, detections)})
-
+        
         # 한 프레임이라도 리스트(검출 존재)인지 확인
         found_faces = any(isinstance(bboxes[k], list) and len(bboxes[k]) > 0 for k in bboxes)
         if not found_faces:
             raise Exception("No faces found.")
-
+            
     return bboxes
 
 # ----------------------------------------
@@ -388,45 +396,46 @@ class TimmFeatureExtractor(torch.nn.Module):
 def load_models(opt, config=None, device_override=None):
     """
     모델과 특징추출기를 로드하여 (모델, 특징추출기, config, device) 반환.
-    - Flask 서버 시작 시 1회 호출해 전역 재사용
-    - 단독 실행 시에도 사용 가능
     """
     dev = device_override if device_override is not None else device
 
-    # config 인자 없으면 파일에서 로드
     if config is None:
         with open(opt.config, "r") as f:
             config = yaml.safe_load(f)
 
-    # 특징추출기: EfficientNetV2-S (timm)
+    # ✨✨✨ 여기가 수정된 핵심 부분! ✨✨✨
+    # 특징추출기는 항상 ImageNet-21k 사전 훈련 가중치를 사용하도록 고정합니다.
+    print("Loading pre-trained ImageNet-21k weights for the extractor.")
     feat = TimmFeatureExtractor('tf_efficientnetv2_s_in21k', pretrained=True).to(dev).eval()
+    # ✨✨✨ 여기까지 수정 ✨✨✨
 
     # 메인 모델: SizeInvariantTimeSformer
     mdl = SizeInvariantTimeSformer(config=config, require_attention=True).to(dev).eval()
 
-    # 체크포인트 로드
+    # 저희가 훈련시킨 메인 모델(TimeSformer)의 가중치를 불러옵니다.
     if not os.path.exists(opt.model_weights):
-        raise Exception("No checkpoint loaded for the model.")
+        raise Exception(f"TimeSformer weights not found at: {opt.model_weights}")
+    print(f"Loading TimeSformer weights from: {opt.model_weights}")
     state_dict = torch.load(opt.model_weights, map_location='cpu')
 
-    # DataParallel 키 보정 (현재 기본은 단일 GPU 가정)
-    first_key = next(iter(state_dict.keys()))
-    if first_key.startswith("module."):
-        # 현재 mdl이 DP가 아니라면 'module.' 제거
+    if next(iter(state_dict.keys())).startswith("module."):
         state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
 
     mdl.load_state_dict(state_dict, strict=False)
     return mdl, feat, config, dev
 
+
 # ----------------------------------------
 # 6) 추론
 # ----------------------------------------
+# predict.py의 predict 함수 부분을 이 코드로 교체해주세요.
+
 def predict(video_path, crops, config, opt, model=None, features_extractor=None, device_override=None):
     """
     추론 진입점.
     - app.py에서는 (사전로드된) model/features_extractor/device를 전달
     - 단독 실행 시 None → 내부에서 load_models() 호출
-    반환: (pred_score, identity_attns, aggregated_attns, identities, frames_per_identity)
+    반환: (pred_score, heatmap_data, identities, frames_list, bboxes)
     """
     dev = device_override if device_override is not None else device
     if model is None or features_extractor is None:
@@ -437,6 +446,11 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
     # 얼굴 클러스터링 → 아이덴티티 정렬
     clustered_faces = cluster_faces(crops)
     identities, discarded_faces = get_sorted_identities(clustered_faces, None, num_frames=config['model']['num-frames'])
+    
+    # get_sorted_identities가 반환한 최종 프레임 리스트와 바운딩 박스를 가져옵니다.
+    frames_list = [[face[0] for face in identity[3]] for identity in identities]
+    bboxes = [face[2] for identity in identities for face in identity[3]]
+
 
     # 마스크/시퀀스 생성
     videos, size_embeddings, mask, identities_mask, positions, tokens_per_identity = generate_masks(
@@ -446,36 +460,40 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
 
     b, f, h, w, c = videos.shape
     videos = videos.to(dev)
-    identities_mask = identities_mask.to(dev)
-    mask = mask.to(dev)
-    positions = positions.to(dev)
 
     with torch.no_grad():
         # (B,F,H,W,C) → (B*F,C,H,W)
         video = rearrange(videos, "b f h w c -> (b f) c h w").to(dev)
-        features = features_extractor(video)                               # (B*F, C', H', W')
+        features = features_extractor(video)
         features = rearrange(features, '(b f) c h w -> b f c h w', b=b, f=f)
+        
+        # 모델 실행하여 예측값과 어텐션 스코어를 받음
         test_pred, attentions = model(
-            features, mask=mask, size_embedding=size_embeddings,
-            identities_mask=identities_mask, positions=positions
+            features, 
+            mask=mask.to(dev), 
+            size_embedding=size_embeddings.to(dev),
+            identities_mask=identities_mask.to(dev), 
+            positions=positions.to(dev)
         )
 
-        identity_names = [row[0] for row in tokens_per_identity]
-        frames_per_identity = [int(row[1] / num_patches) for row in tokens_per_identity]
+        # ✨✨✨ 여기가 핵심 수정 부분! ✨✨✨
+        # utils.py의 함수를 호출하여 어텐션 스코어를 실제 히트맵 데이터로 가공합니다.
+        # opt.save_attentions 조건문 없이 항상 실행하여 app.py에 데이터를 제공합니다.
+        heatmap_per_frame, _ = aggregate_attentions(
+            attentions=attentions,
+            num_heads=config['model']['heads'],
+            num_frames=config['model']['num-frames'],
+            frames_per_identity=[int(row[1] / num_patches) for row in tokens_per_identity]
+        )
 
-        if opt.save_attentions:
-            aggregated_attentions, identity_attentions = aggregate_attentions(
-                attentions, config['model']['heads'], config['model']['num-frames'], frames_per_identity
-            )
-            save_attention_plots(
-                aggregated_attentions, identity_names, frames_per_identity,
-                config['model']['num-frames'], os.path.basename(video_path)
-            )
-        else:
-            identity_attentions = []
-            aggregated_attentions = []
-
-        return torch.sigmoid(test_pred[0]).item(), identity_attentions, aggregated_attentions, identities, frames_per_identity
+        # 최종적으로 app.py가 필요한 모든 정보를 반환합니다.
+        return (
+            torch.sigmoid(test_pred[0]).item(), 
+            heatmap_per_frame.cpu().numpy(), # 실제 히트맵 데이터
+            identities, 
+            frames_list, 
+            bboxes
+        )
 
 # ----------------------------------------
 # 7) 결과 비디오 생성 (옵션)

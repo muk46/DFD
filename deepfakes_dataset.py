@@ -1,4 +1,4 @@
-# DeepFakesDataset class used for data loading
+0# DeepFakesDataset class used for data loading
 # In this step the identities are also refined and organized in order to fit into the available number of frames per video. 
 # The data augmentation is also applied to each face extracted from the video and several embeddings and masks are generated:
 # 1. The Size Embedding, responsible to induct the information about face-frame area ratio of each face to the model. 
@@ -23,12 +23,55 @@ import re
 import cv2
 from itertools import compress
 from statistics import mean
-
+from tqdm import tqdm 
 
 ORIGINAL_VIDEOS_PATH = {"train": "../datasets/ForgeryNet/Training/video/train_video_release", "val": "../datasets/ForgeryNet/Training/video/train_video_release", "test": "../datasets/ForgeryNet/Validation/video/val_video_release"}
 MODES = ["train", "val", "test"]
 RANGE_SIZE = 5
 SIZE_EMB_DICT = [(1+i*RANGE_SIZE, (i+1)*RANGE_SIZE) if i != 0 else (0, RANGE_SIZE) for i in range(20)]
+def build_file_info_cache(videos_paths, data_path):
+    print("Caching file paths and info to accelerate data loading...")
+    cache = {}
+    for video_path in tqdm(list(set(videos_paths)), desc="Scanning video paths"):
+        video_id = os.path.basename(video_path)
+        
+        found = False
+        for label_str in ["REAL", "FAKE"]:
+            full_video_path = os.path.join(data_path, label_str, video_id)
+            if os.path.isdir(full_video_path):
+                cache[video_id] = {'identities': {}, 'discarded_faces': []}
+                items = [os.path.join(full_video_path, item) for item in os.listdir(full_video_path)]
+                
+                for item_path in items:
+                    if os.path.isdir(item_path):
+                        identity_name = os.path.basename(item_path)
+                        frames = [os.path.join(item_path, f) for f in os.listdir(item_path) if f.endswith(('.jpg', '.png'))]
+                        
+                        frame_info = []
+                        for frame_path in frames:
+                            try:
+                                # PIL로 이미지 크기 확인 (magic 라이브러리보다 안정적)
+                                with Image.open(frame_path) as img:
+                                    width, _ = img.size
+                                    frame_info.append({'path': frame_path, 'side': width})
+                            except Exception:
+                                frame_info.append({'path': frame_path, 'side': 0})
+                        
+                        mean_side = np.mean([info['side'] for info in frame_info]) if frame_info else 0
+                        cache[video_id]['identities'][identity_name] = {
+                            'frames': frame_info,
+                            'mean_side': mean_side,
+                            'num_faces': len(frame_info)
+                        }
+                    else:
+                        cache[video_id]['discarded_faces'].append(item_path)
+                found = True
+                break
+        if not found:
+            cache[video_id] = {'identities': {}, 'discarded_faces': []}
+            
+    print("File path caching complete.")
+    return cache
 
 class DeepFakesDataset(Dataset):
     def __init__(self, videos_paths, labels, data_path, video_path, image_size, augmentation = None, multiclass_labels = None, save_attention_plots = False, mode = 'train', model = 0, num_frames = 8, max_identities = 3, num_patches=49, enable_identity_attention = True, identities_ordering = 0):
@@ -53,6 +96,7 @@ class DeepFakesDataset(Dataset):
                                      4:  [int(num_frames/3), int(num_frames/3), int(num_frames/8), int(num_frames/8)]}
         self.enable_identity_attention = enable_identity_attention
         self.identities_ordering = identities_ordering
+        self.file_cache = build_file_info_cache(self.x, self.data_path)
     
     def create_train_transforms(self, size, additional_targets, augmentation):
         if augmentation == "min":
@@ -118,8 +162,16 @@ class DeepFakesDataset(Dataset):
         return [identity, mean_side, number_of_faces]
 
     def get_sorted_identities(self, video_path):
+        video_id = os.path.basename(video_path)
+        video_info = self.file_cache.get(video_id, {'identities': {}, 'discarded_faces': []})
+        identities_info = video_info['identities']
+        discarded_faces = video_info['discarded_faces']
+        if not os.path.exists(video_path):
+            print(f"[Warning] {video_path} not found (maybe no faces detected). Skipping...")
+            return [], []  # 그냥 빈 데이터 반환해서 무시
+
         identities = [os.path.join(video_path, identity) for identity in os.listdir(video_path)]
-        sorted_identities = []
+        sorted_identities = [[os.path.join(self.data_path, "REAL" if self.y[self.x.index(video_id)]==0 else "FAKE", video_id, name), info['mean_side'], info['num_faces']] for name, info in identities_info.items()]
         discarded_faces = []
         for identity in identities:
             if not os.path.isdir(identity):
@@ -182,6 +234,7 @@ class DeepFakesDataset(Dataset):
         video_id = os.path.basename(video_path)  
         label_str = "FAKE" if self.y[index] == 1 else "REAL"
         video_path = os.path.join(self.data_path, label_str, video_id)
+        
         if self.mode not in video_path:
             for mode in MODES:
                 if mode in video_path:
@@ -191,6 +244,9 @@ class DeepFakesDataset(Dataset):
         video_id = os.path.basename(video_path)
 
         identities, discarded_faces = self.get_sorted_identities(video_path)
+        
+        if len(identities) == 0:
+            return None
 
         mask = []
         sequence = []

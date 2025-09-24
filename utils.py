@@ -1,6 +1,7 @@
 # Utility functions for training process
 
 import numpy as np
+import os
 import torch
 from matplotlib import pyplot as plt
 from random import random
@@ -65,47 +66,82 @@ def multiple_lists_mean(a):
     return sum(a) / len(a)
 
 # Aggregate space and time attention 
-def aggregate_attentions(attentions, heads, num_frames, frames_per_identity, scale_factor = 50000):
+def aggregate_attentions(attentions, num_heads, num_frames, frames_per_identity):
+    """Aggregates the attentions from the different heads and layers."""
+    # attentions는 [space_attention, time_attention] 리스트.
+    # 마지막 어텐션인 time_attention을 사용.
+    # time_attention의 shape는 (num_heads, 1, num_tokens) 형태의 3D 텐서.
+    
+    # ✨✨✨ 여기가 수정된 핵심 부분! ✨✨✨
+    # 3D 텐서에 맞게 인덱싱을 수정하여 "too many indices" 오류를 해결.
+    # CLS 토큰(인덱스 0)이 다른 모든 패치 토큰(인덱스 1부터)에 대해 갖는 어텐션 값을 추출.
+    attention_scores = attentions[-1][:, 0, 1:]  # (num_heads, num_patches)
+    
+    # 모든 헤드의 어텐션 점수를 평균내어 최종 어텐션 맵 생성.
+    attention_scores = torch.mean(attention_scores, dim=0)  # (num_patches)
+    
+    num_patches_per_frame = attention_scores.shape[0] // num_frames
 
-    # Collapse attentions heads for each attention separated
-    aggregated_attentions = []
-    for attention in attentions:
-        attention = attention.squeeze(1)
-        attention = rearrange(attention, '(b h) t -> b h t', h = heads)
-        tokens_means = [torch.max(attention[:, :, i]).item() for i in range(attention.shape[2])]        
-        aggregated_attentions.append(tokens_means)
+    w = h = int(np.sqrt(num_patches_per_frame))
+    heatmap_per_frame = rearrange(attention_scores, '(f h w) -> f h w', f=num_frames, h=h, w=w)
 
-    # Combined space and time attention
-    tokens_means_combined = list(np.sum(np.asarray(aggregated_attentions), axis=0))
-    aggregated_attentions.append(tokens_means_combined)
-
-    # Softmax all the attentions
-    for i in range(len(aggregated_attentions)):
-        aggregated_attentions[i] = np.array_split(np.asarray(aggregated_attentions[i]), num_frames)
-        aggregated_attentions[i] = softmax([mean(values)*scale_factor for values in aggregated_attentions[i]])
-
+    
     identity_attentions = []
-    for index, identity_frames in enumerate(frames_per_identity):
-        if index == 0:
-            identity_attention = sum(aggregated_attentions[-1][:identity_frames-1])
-        else:
-            previous_identity_frames = frames_per_identity[index-1]
-            identity_attention = sum(aggregated_attentions[-1][previous_identity_frames-1:identity_frames-1])
-        identity_attentions.append(identity_attention)
+    start_frame_idx = 0
+    
+    if isinstance(frames_per_identity, int):
+        frames_per_identity = [frames_per_identity]
 
-    return aggregated_attentions, identity_attentions
+    for n_faces in frames_per_identity:
+        end_frame_idx = start_frame_idx + n_faces
+        
+        start_patch_idx = start_frame_idx * num_patches_per_frame
+        end_patch_idx = end_frame_idx * num_patches_per_frame
+        
+        identity_attn = attention_scores[start_patch_idx:end_patch_idx]
+        
+        if identity_attn.numel() > 0:
+            # 각 identity(얼굴)에 대한 평균 어텐션 값 계산
+            identity_attentions.append(identity_attn.mean().item())
+        else:
+            identity_attentions.append(0.0)
+            
+        start_frame_idx = end_frame_idx
+
+    aggregated_attentions = attention_scores.cpu().numpy()
+    
+    # aggregated_attentions: 전체 패치에 대한 1D 어텐션 배열
+    # identity_attentions: 각 얼굴(identity)별 평균 어텐션 스코어 리스트
+    return heatmap_per_frame, identity_attentions
+
 
 
 # Visualize the attention
-def save_attention_plots(aggregated_attentions, identity_names, frames_per_identity, num_frames, video_id):
-    colors = np.random.rand(len(frames_per_identity), 4)
-    for index, tokens_means in enumerate(aggregated_attentions):
-        plt.bar([i+1 for i in range(num_frames)], tokens_means)
-        for i in range(len(frames_per_identity)):
-            plt.vlines(frames_per_identity[i], ymin=min(tokens_means), ymax=max(tokens_means), colors=colors[i], label = str(identity_names[i]))
-        plt.legend()
-        plt.savefig("outputs/tokens/" + video_id + "_" + PLOTS_NAMES[index] + ".jpg")
-        plt.clf()
+def save_attention_plots(attention, identity_names, frames_per_identity, num_frames, video_name, suffix=""):
+    """Saves the attention plots to a file in a non-conflicting directory."""
+    if attention is None or len(attention) == 0:
+        return
+
+    plt.figure(figsize=(num_frames, len(identity_names) * 2))
+    
+    for i, (name, frames) in enumerate(zip(identity_names, frames_per_identity)):
+        ax = plt.subplot(len(identity_names), 1, i + 1)
+        # Assuming attention is a 1D array, reshape for imshow
+        # This part might need adjustment based on the exact shape of 'attention'
+        im = ax.imshow(np.array(attention).reshape(1, -1), cmap="seismic", vmin=-1, vmax=1)
+        ax.set_title(f"Identity: {name}")
+        ax.set_yticks([])
+        ax.set_xticks(list(range(num_frames)))
+        ax.set_xticklabels(list(range(1, num_frames + 1)))
+
+    # 저장 경로를 'xai_results'로 분리
+    file_path = f"xai_results/tokens/{video_name}_{suffix}.jpg"
+    
+    # 폴더가 없으면 자동으로 생성
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    
+    plt.savefig(file_path)
+    plt.close()
 
 
 def draw_border(img, pt1, pt2, color, thickness, r, d):

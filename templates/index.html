@@ -3,99 +3,144 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>딥페이크 탐지기</title>
+    <title>딥페이크 탐지 졸업 프로젝트</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #f4f4f4; color: #333; }
-        .container { max-width: 600px; margin: auto; padding: 20px; background-color: #fff; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        h1 { color: #0056b3; }
-        #drop-area { border: 2px dashed #ccc; border-radius: 20px; padding: 40px; margin: 20px 0; cursor: pointer; transition: all 0.3s ease; }
-        #drop-area:hover { background-color: #e9e9e9; border-color: #999; }
-        #drop-area.highlight { border-color: #007bff; background-color: #eef; }
-        #file-name { margin-top: 10px; font-weight: bold; }
-        #result { margin-top: 30px; font-size: 1.2em; font-weight: bold; }
-        .is-fake { color: #d9534f; }
-        .is-real { color: #5cb85c; }
-        .loading { color: #f0ad4e; }
-        .error { color: #d9534f; }
-        .button {
-            display: inline-block;
-            padding: 10px 20px;
-            background-color: #007bff;
-            color: white;
-            border-radius: 5px;
-            cursor: pointer;
-        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 2rem; background-color: #f4f7f6; color: #333; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1, h2 { text-align: center; color: #2c3e50; }
+        .tabs { display: flex; border-bottom: 2px solid #ddd; margin-bottom: 1.5rem; }
+        .tab-button { padding: 1rem 1.5rem; cursor: pointer; background: none; border: none; font-size: 1rem; font-weight: 500; color: #777; }
+        .tab-button.active { color: #3498db; border-bottom: 2px solid #3498db; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .form-group { margin-bottom: 1.5rem; }
+        label { display: block; margin-bottom: .5rem; font-weight: 600; }
+        input[type="file"], input[type="text"] { width: 100%; padding: .75rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { display: block; width: 100%; padding: .8rem; background-color: #3498db; color: white; border: none; border-radius: 4px; font-size: 1.1rem; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #2980b9; }
+        .loader { display: none; text-align: center; padding: 2rem; }
+        #results { display: none; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid #eee; }
+        .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: center; }
+        .result-text h3 { margin-top: 0; }
+        .result-text p { font-size: 1.2rem; font-weight: bold; }
+        .real { color: green; }
+        .fake { color: red; }
+        .heatmap img { max-width: 100%; border-radius: 4px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>딥페이크 탐지기</h1>
-        <p>비디오 파일을 아래에 드래그하거나 클릭하여 업로드하세요. 🧐</p>
-        
-        <div id="drop-area">
-            <input type="file" id="fileElem" accept="video/*" style="display: none">
-            <label class="button" for="fileElem">파일 선택</label>
-            <p id="file-name"></p>
+
+<div class="container">
+    <h1>딥페이크 탐지 시스템</h1>
+    
+
+    <form id="predictionForm" method="POST" enctype="multipart/form-data">
+        <div id="uploadTab" class="tab-content active">
+            <div class="form-group">
+                <label for="file">동영상 파일을 선택하세요:</label>
+                <input type="file" name="file" id="file" accept="video/*" required>
+            </div>
         </div>
 
-        <div id="result"></div>
+        <button type="submit">분석 시작</button>
+    </form>
+
+    <div class="loader" id="loader">
+        <p>영상을 분석 중입니다... 잠시만 기다려주세요.</p>
     </div>
 
-    <script>
-        const dropArea = document.getElementById('drop-area');
-        const fileElem = document.getElementById('fileElem');
-        const fileNameDisplay = document.getElementById('file-name');
-        const resultDiv = document.getElementById('result');
+    <div id="results">
+        <h2>분석 결과</h2>
+        <div class="result-grid">
+            <div class="result-text">
+                <h3>최종 판별</h3>
+                <p id="predictionText"></p>
+            </div>
+            <div class="heatmap">
+                <h3>XAI 분석 (히트맵)</h3>
+                <p id="heatmapDescription"></p>
+                <img id="heatmapImage" src="" alt="XAI Heatmap">
+            </div>
+        </div>
+    </div>
+</div>
 
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt =>
-            dropArea.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); }, false)
-        );
-        ['dragenter', 'dragover'].forEach(evt =>
-            dropArea.addEventListener(evt, () => dropArea.classList.add('highlight'), false)
-        );
-        ['dragleave', 'drop'].forEach(evt =>
-            dropArea.addEventListener(evt, () => dropArea.classList.remove('highlight'), false)
-        );
+<script>
+    /*
+    function openTab(evt, tabName) {
+        var i, tabcontent, tablinks;
+        tabcontent = document.getElementsByClassName("tab-content");
+        for (i = 0; i < tabcontent.length; i++) {
+            tabcontent[i].style.display = "none";
+        }
+        tablinks = document.getElementsByClassName("tab-button");
+        for (i = 0; i < tablinks.length; i++) {
+            tablinks[i].className = tablinks[i].className.replace(" active", "");
+        }
+        document.getElementById(tabName).style.display = "block";
+        evt.currentTarget.className += " active";
+        if (tabName === 'uploadTab') {
+            document.getElementById('youtube_url').removeAttribute('required');
+            document.getElementById('file').setAttribute('required', 'required');
+        } else {
+            document.getElementById('file').removeAttribute('required');
+            document.getElementById('youtube_url').setAttribute('required', 'required');
+        }
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelector('.tab-button').click();
+    });
+    */
 
-        dropArea.addEventListener('drop', e => handleFiles(e.dataTransfer.files), false);
-        dropArea.addEventListener('click', () => fileElem.click(), false);
-        fileElem.addEventListener('change', e => handleFiles(e.target.files), false);
+    const form = document.getElementById('predictionForm');
+    const loader = document.getElementById('loader');
+    const resultsDiv = document.getElementById('results');
+    const predictionText = document.getElementById('predictionText');
+    const heatmapImage = document.getElementById('heatmapImage');
+    const heatmapDescription = document.getElementById('heatmapDescription');
 
-        function handleFiles(files) {
-            const file = files && files[0];
-            if (!file || !file.type.startsWith('video/')) {
-                resultDiv.innerHTML = '<p class="error">비디오 파일만 업로드할 수 있습니다. 📹</p>';
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        loader.style.display = 'block';
+        resultsDiv.style.display = 'none';
+        const formData = new FormData(this);
+        
+        fetch('/predict', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            loader.style.display = 'none';
+            resultsDiv.style.display = 'block';
+
+            if (data.error) {
+                alert('오류: ' + data.error);
                 return;
             }
 
-            fileNameDisplay.textContent = `선택된 파일: ${file.name}`;
-            resultDiv.innerHTML = '<p class="loading">분석 중입니다... ⏳</p>';
+            const prediction = data.prediction;
+            const isFake = data.is_fake;
+            const heatmapPath = data.heatmap_path;
 
-            const formData = new FormData();
-            // 🔧 핵심 수정: 서버가 기대하는 키 이름은 'file'
-            formData.append('file', file);
+            if (isFake) {
+                predictionText.innerHTML = `FAKE <span class="fake">(${(prediction * 100).toFixed(2)}%)</span>`;
+                predictionText.className = 'fake';
+                heatmapDescription.innerHTML = "모델이 <strong>'의심스럽게'</strong> 본 영역입니다.";
+            } else {
+                predictionText.innerHTML = `REAL <span class="real">(${(1 - prediction) * 100}%)</span>`;
+                predictionText.className = 'real';
+                heatmapDescription.innerHTML = "모델이 <strong>'진짜임을 확인하기 위해 집중적으로 검토'</strong>한 영역입니다.";
+            }
+            
+            heatmapImage.src = heatmapPath + '?t=' + new Date().getTime();
+        })
+        .catch(error => {
+            loader.style.display = 'none';
+            alert('오류가 발생했습니다: ' + error);
+        });
+    });
+</script>
 
-            fetch('/predict', { method: 'POST', body: formData })
-                .then(async (res) => {
-                    let data;
-                    try { data = await res.json(); } catch { throw new Error('Invalid JSON response'); }
-                    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-                    return data;
-                })
-                .then((data) => {
-                    const isFake = data.is_fake ? '가짜' : '진짜';
-                    const confidence = (data.prediction * 100).toFixed(2);
-                    const resultClass = data.is_fake ? 'is-fake' : 'is-real';
-                    const resultEmoji = data.is_fake ? '🚨' : '✅';
-                    resultDiv.innerHTML = `
-                        <h2>분석 결과 ${resultEmoji}</h2>
-                        <p class="${resultClass}">이 비디오는 <strong>${isFake}</strong>일 확률이 ${confidence}% 입니다.</p>
-                    `;
-                })
-                .catch((err) => {
-                    resultDiv.innerHTML = `<p class="error">오류: ${err.message} ❌</p>`;
-                });
-        }
-    </script>
 </body>
 </html>
