@@ -1,306 +1,127 @@
-# train.py — EfficientNetV2-S + SizeInvariantTimeSformer (최종 코드)
-
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-
-import numpy as np
 import argparse
-from tqdm import tqdm
-import math
-import yaml
-from utils import check_correct, unix_time_millis, slowfast_input_transform
-from datetime import datetime
-import collections
 import os
-from itertools import chain
-import random
-from einops import rearrange
-import pandas as pd
-from progress.bar import ChargingBar
-from torch.optim import lr_scheduler
-from deepfakes_dataset import DeepFakesDataset
-from models.size_invariant_timesformer import SizeInvariantTimeSformer
-from torch.utils.tensorboard import SummaryWriter
-from timm.scheduler.cosine_lr import CosineLRScheduler
-import sys
-import timm
-import torch.nn as nn
+import json
 import torch
-from imblearn.over_sampling import RandomOverSampler
-from torch.cuda.amp import autocast, GradScaler
+import sys
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
+import cv2
+from PIL import Image
+from ultralytics import YOLO
 
-# --------------------------------
-# 유틸 함수
-# --------------------------------
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class VideoDataset(Dataset):
+    def __init__(self, video_paths, target_fps=5):
+        self.video_paths = video_paths
+        self.target_fps = target_fps
+
+    def __len__(self):
+        return len(self.video_paths)
+
+    def __getitem__(self, idx):
+        video_path = self.video_paths[idx]
+        frames = []
+        original_indices = []
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"Warning: Could not open video file {video_path}")
+                return video_path, [], []
+
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            frames_num = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            frame_interval = max(1, round(fps / self.target_fps)) if fps > 0 else 1
+
+            for frame_id in range(frames_num):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_id % frame_interval == 0:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(frame_rgb)
+                    frames.append(pil_img)
+                    original_indices.append(frame_id)
+            cap.release()
+            return video_path, frames, original_indices
+        except Exception as e:
+            print(f"Error processing video {video_path}: {e}")
+            if 'cap' in locals() and cap.isOpened():
+                cap.release()
+            return video_path, [], []
+
+
 def collate_fn(batch):
-    batch = list(filter(lambda x: x is not None, batch))
-    if len(batch) == 0:
-        return None
-    return torch.utils.data.dataloader.default_collate(batch)
+    return batch[0]
 
-def set_seed(seed: int = 42):
-    """랜덤 시드 고정 → 재현성 확보"""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
 
-class TimmFeatureExtractor(nn.Module):
-    """timm 모델 래퍼 → EfficientNetV2-S를 로드하여 특성맵 반환"""
-    def __init__(self, model_name: str = 'tf_efficientnetv2_s_in21k', pretrained: bool = True):
-        super().__init__()
-        self.backbone = timm.create_model(
-            model_name, pretrained=pretrained,
-            num_classes=0, global_pool=''
+def main(opt):
+    detector = YOLO('yolov8n-face.pt').to(device).eval()
+
+    with open(opt.list_file, 'r') as f:
+        video_files = [line.strip().split()[1] for line in f if line.strip()]
+    video_paths = list(dict.fromkeys([os.path.join(opt.data_path, fname) for fname in video_files]))
+
+    os.makedirs(opt.output_path, exist_ok=True)
+
+    processed = {d for d in os.listdir(opt.output_path) if os.path.isdir(os.path.join(opt.output_path, d))}
+    video_paths = [vp for vp in video_paths if os.path.splitext(os.path.basename(vp))[0] not in processed]
+
+    print(f"실제로 처리할 비디오 수: {len(video_paths)}")
+
+    dataset = VideoDataset(video_paths, target_fps=opt.target_fps)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=opt.workers, collate_fn=collate_fn)
+
+    for video_path, frames, original_indices in tqdm(dataloader, desc="Detecting Faces"):
+        if not frames:
+            continue
+
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        output_dir = os.path.join(opt.output_path, video_name)
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, "video.json")
+
+        results = detector.predict(
+            frames,
+            conf=0.5,
+            iou=0.7,
+            device=device,
+            verbose=False,
+            stream=False,
+            batch=opt.batch_size,
         )
-    def forward(self, x):
-        return self.backbone.forward_features(x)
 
-# --------------------------------
-# 메인 실행부
-# --------------------------------
+        output_data = {}
+        score_threshold = 0.8
+        for i, res in enumerate(results):
+            boxes_xyxy = res.boxes.xyxy.cpu().numpy()
+            confs = res.boxes.conf.cpu().numpy()
+            high_conf_boxes = [box.tolist() for box, conf in zip(boxes_xyxy, confs) if conf > score_threshold]
+
+            if high_conf_boxes:
+                frame_idx = original_indices[i]
+                output_data[frame_idx] = high_conf_boxes
+
+        if output_data:
+            with open(output_file, 'w') as f:
+                json.dump(output_data, f)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    
-    parser.add_argument('--train_list_file', default='split/train_videos.txt', type=str)
-    parser.add_argument('--validation_list_file', default='split/val_videos.txt', type=str)
-    parser.add_argument('--data_path', type=str, required=True)
-    parser.add_argument('--config', required=True, type=str)
-    
-    # --- [수정] 불필요한 인자들 제거 ---
-    parser.add_argument('--video_path', default='videos', type=str) # deepfakes_dataset.py 호환성을 위해 유지
-    parser.add_argument('--num_epochs', default=30, type=int)
-    parser.add_argument('--workers', default=8, type=int)
-    parser.add_argument('--random_state', default=42, type=int)
+    parser.add_argument('--list_file', default='./video_list.txt', type=str)
+    parser.add_argument('--data_path', default='../videos', type=str)
+    parser.add_argument('--output_path', default='../boxes', type=str)
     parser.add_argument('--gpu_id', default=0, type=int)
-    parser.add_argument('--resume', default='', type=str, metavar='PATH')
-    parser.add_argument('--patience', type=int, default=5)
-    parser.add_argument('--logger_name', default='runs/train')
-    parser.add_argument('--models_output_path', default='outputs/models')
-    # ------------------------------------
+    parser.add_argument('--workers', default=0, type=int)
+    parser.add_argument('--target_fps', default=5, type=int, help='Frames per second to sample from video')
+    parser.add_argument('--batch_size', default=16, type=int, help='Batch size for YOLOv8 prediction')
 
     opt = parser.parse_args()
-    print(opt)
-    
-    with open(opt.config, 'r') as ymlfile:
-        config = yaml.safe_load(ymlfile)
 
-    device = torch.device(f'cuda:{opt.gpu_id}' if torch.cuda.is_available() and opt.gpu_id >= 0 else 'cpu')
-    print(f"Using device: {device}")
+    if sys.platform.startswith('win'):
+        import multiprocessing
+        multiprocessing.freeze_support()
 
-    set_seed(opt.random_state)
-
-    os.makedirs(opt.logger_name, exist_ok=True)
-    os.makedirs(opt.models_output_path, exist_ok=True)
-
-    # --- [수정] 특징 추출기 로딩 로직 간소화 ---
-    print("Loading feature extractor: EfficientNetV2-S")
-    features_extractor = TimmFeatureExtractor(model_name='tf_efficientnetv2_s_in21k', pretrained=True)
-    features_extractor = features_extractor.to(device)
-    # ---------------------------------------
-
-    # --- [수정] 모델 로딩 로직 간소화 ---
-    print("Loading model: SizeInvariantTimeSformer")
-    model = SizeInvariantTimeSformer(config=config)
-    num_patches = config['model']['num-patches']
-    model = model.to(device)
-    # ---------------------------------
-    
-    model.train()
-    features_extractor.train()
-    
-    parameters = chain(features_extractor.parameters(), model.parameters())
-
-    if config['training']['optimizer'].lower() == 'sgd':
-        optimizer = torch.optim.SGD(parameters, lr=config['training']['lr'], weight_decay=config['training']['weight-decay'])
-    elif config['training']['optimizer'].lower() == 'adamw':
-        optimizer = torch.optim.AdamW(parameters, lr=config['training']['lr'], weight_decay=config['training']['weight-decay'])
-    else: # 기본값 Adam
-        optimizer = torch.optim.Adam(parameters, lr=config['training']['lr'], weight_decay=config['training']['weight-decay'])
-
-    col_names = ["label", "video"]
-    df_train = pd.read_csv(opt.train_list_file, sep=' ', names=col_names)
-    df_train["label"] = df_train["label"].map({"REAL": 0, "FAKE": 1})
-    df_validation = pd.read_csv(opt.validation_list_file, sep=' ', names=col_names)
-    df_validation["label"] = df_validation["label"].map({"REAL": 0, "FAKE": 1})
-    
-    df_train = df_train.sample(frac=1, random_state=opt.random_state).reset_index(drop=True)
-    df_validation = df_validation.sample(frac=1, random_state=opt.random_state).reset_index(drop=True)
-    
-    # 없는 비디오 데이터 제거
-    for df in [df_train, df_validation]:
-        indexes_to_drop = []
-        for index, row in df.iterrows():
-            split_dir = "REAL" if row["label"] == 0 else "FAKE"
-            video_dir_path = os.path.join(opt.data_path, split_dir, row["video"])
-            if not os.path.isdir(video_dir_path) or len(os.listdir(video_dir_path)) == 0:
-                indexes_to_drop.append(index)
-        df.drop(df.index[indexes_to_drop], inplace=True)
-    
-    train_videos = df_train['video'].tolist()
-    train_labels = df_train['label'].tolist()
-    validation_videos = df_validation['video'].tolist()
-    validation_labels = df_validation['label'].tolist()
-    
-    print(f"Original training data distribution: {collections.Counter(train_labels)}")
-    ros = RandomOverSampler(random_state=opt.random_state)
-    train_videos_np = np.array(train_videos).reshape(-1, 1)
-    resampled_train_videos_np, resampled_train_labels = ros.fit_resample(train_videos_np, train_labels)
-    resampled_train_videos = resampled_train_videos_np.flatten().tolist()
-    print(f"Resampled training data distribution: {collections.Counter(resampled_train_labels)}")
-
-    train_samples = len(resampled_train_videos)
-    validation_samples = len(validation_videos)
-
-    print("Train videos:", train_samples, "Validation videos:", validation_samples)
-    print("__TRAINING STATS__")
-    train_counters = collections.Counter(resampled_train_labels)
-    print(train_counters)
-    
-    
-    class_weights = train_counters.get(0, 1) / max(train_counters.get(1, 1), 1)
-    print("Weights", class_weights)
-
-    print("__VALIDATION STATS__")
-    val_counters = collections.Counter(validation_labels)
-    print(val_counters)
-    print("___________________")
-
-    tb_logger = SummaryWriter(log_dir=opt.logger_name, comment='')
-    
-    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([class_weights]).to(device))
-
-    train_dataset = DeepFakesDataset(resampled_train_videos, resampled_train_labels, augmentation=config['training']['augmentation'], image_size=config['model']['image-size'], data_path=opt.data_path, video_path=opt.video_path, num_frames=config['model']['num-frames'], num_patches=num_patches, max_identities=config['model']['max-identities'])
-    train_dl = torch.utils.data.DataLoader(train_dataset, batch_size=config['training']['bs'], shuffle=True, num_workers=opt.workers, collate_fn=collate_fn)
-
-    validation_dataset = DeepFakesDataset(validation_videos, validation_labels, image_size=config['model']['image-size'], data_path=opt.data_path, video_path=opt.video_path, num_frames=config['model']['num-frames'], num_patches=num_patches, max_identities=config['model']['max-identities'], mode='val')
-    val_dl = torch.utils.data.DataLoader(validation_dataset, batch_size=config['training']['val_bs'], shuffle=False, num_workers=opt.workers, collate_fn=collate_fn)
-
-    scheduler = None
-    if config['training']['scheduler'].lower() == 'steplr':
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=config['training']['step-size'], gamma=config['training']['gamma'])
-    elif config['training']['scheduler'].lower() == 'cosinelr':
-        num_steps = int(opt.num_epochs * len(train_dl))
-        scheduler = CosineLRScheduler(
-                optimizer,
-                t_initial=num_steps,
-                lr_min=config['training']['lr'] * 1e-1,
-                cycle_limit=1,
-                t_in_epochs=False,
-        )
-
-    starting_epoch = 0
-    if os.path.exists(opt.resume):
-        checkpoint = torch.load(opt.resume)
-        try:
-            features_extractor.load_state_dict(torch.load(opt.resume.replace("Model", "Extractor")))
-            print(f"Resuming feature extractor from: {opt.resume.replace('Model', 'Extractor')}")
-        except:
-            print("Warning: No extractor checkpoint found, starting fresh.")
-
-        model.load_state_dict(checkpoint)
-        print(f"Resuming main model from: {opt.resume}")
-
-    not_improved_loss = 0
-    previous_loss = math.inf
-
-    scaler = GradScaler()
-    
-    for t in range(starting_epoch, opt.num_epochs):
-        model.train()
-        features_extractor.train()
-            
-        if not_improved_loss >= opt.patience:
-            print(f"Early stopping at epoch {t} due to no improvement in validation loss.")
-            break
-
-        total_loss = 0
-        train_correct = 0
-        
-        for data in tqdm(train_dl, desc=f"EPOCH #{t} [TRAIN]"):
-            if data is None:
-                continue
-            videos, size_embeddings, masks, identities_masks, positions, labels = data
-            
-            labels = labels.unsqueeze(1).float().to(device)
-            videos = videos.to(device)
-            
-            # --- [변경] autocast 컨텍스트 적용 ---
-            with autocast():
-                videos_rearranged = rearrange(videos, "b f c h w -> (b f) c h w")
-                features = features_extractor(videos_rearranged)
-                
-                b, f = videos.shape[0], videos.shape[1]
-                features = rearrange(features, '(b f) c h w -> b f c h w', b=b, f=f)
-                y_pred = model(features, mask=masks.to(device), size_embedding=size_embeddings.to(device), identities_mask=identities_masks.to(device), positions=positions.to(device))
-                
-                loss = loss_fn(y_pred, labels)
-            # --------------------------------------
-            
-            corrects, _, _ = check_correct(y_pred.cpu(), labels.cpu())
-            train_correct += corrects
-            total_loss += loss.item()
-            
-            # --- [변경] scaler를 사용하여 역전파 및 업데이트 ---
-            optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            # --------------------------------------------------
-            
-            if scheduler is not None and config['training']['scheduler'].lower() == 'cosinelr':
-                scheduler.step_update((t * len(train_dl) + index))
-        
-        total_val_loss = 0
-        val_correct = 0
-        
-        model.eval()
-        features_extractor.eval()
-
-        with torch.no_grad():
-            for data in tqdm(val_dl, desc=f"EPOCH #{t} [VAL]"):
-                videos, size_embeddings, masks, identities_masks, positions, labels = data
-                
-                labels = labels.unsqueeze(1).float().to(device)
-                videos = videos.to(device)
-
-                videos_rearranged = rearrange(videos, 'b f c h w -> (b f) c h w')
-                features = features_extractor(videos_rearranged)
-                
-                b, f = videos.shape[0], videos.shape[1]
-                features = rearrange(features, '(b f) c h w -> b f c h w', b=b, f=f)
-                val_pred = model(features, mask=masks.to(device), size_embedding=size_embeddings.to(device), identities_mask=identities_masks.to(device), positions=positions.to(device))
-
-                val_loss = loss_fn(val_pred, labels)
-                
-                total_val_loss += val_loss.item()
-                corrects, _, _ = check_correct(val_pred.cpu(), labels.cpu())
-                val_correct += corrects
-        
-        if scheduler is not None and config['training']['scheduler'].lower() == 'steplr':
-            scheduler.step()
-        
-        avg_loss = total_loss / len(train_dl)
-        avg_val_loss = total_val_loss / len(val_dl)
-        train_accuracy = train_correct / train_samples
-        val_accuracy = val_correct / validation_samples
-
-        print(f"\n[Epoch {t:02d}] Train Loss: {avg_loss:.4f}, Train Acc: {train_accuracy:.2%} | Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.2%}")
-
-        if avg_val_loss < previous_loss:
-            print(f"Validation loss improved from {previous_loss:.4f} to {avg_val_loss:.4f}, saving checkpoint...")
-            not_improved_loss = 0
-            previous_loss = avg_val_loss
-            
-            torch.save(features_extractor.state_dict(), os.path.join(opt.models_output_path, f"Extractor_checkpoint{t}.pth"))
-            torch.save(model.state_dict(), os.path.join(opt.models_output_path, f"Model_checkpoint{t}.pth"))
-        else:
-            print(f"Validation loss did not improve from {previous_loss:.4f}")
-            not_improved_loss += 1
-        
-        tb_logger.add_scalar("Training/Accuracy", train_accuracy, t)
-        tb_logger.add_scalar("Training/Loss", avg_loss, t)
-        tb_logger.add_scalar("Training/Learning_Rate", optimizer.param_groups[0]['lr'], t)
-        tb_logger.add_scalar("Validation/Loss", avg_val_loss, t)
-        tb_logger.add_scalar("Validation/Accuracy", val_accuracy, t)
+    main(opt)
