@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepFake Detector</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css') }}"
+    />
+  </head>
+  <body>
+    <header>
+      <h1>DeepFake Detector</h1>
+      <p>
+        Upload a video or enter a YouTube URL to check for AI-generated content.
+      </p>
+    </header>
+
+    <main>
+      <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="file">Upload File</button>
+        <button class="tab-btn" data-tab="url">YouTube URL</button>
+      </nav>
+
+      <div class="tab-content">
+        <div id="file" class="tab-panel">
+          <h3>Upload Video File</h3>
+          <input type="file" id="fileInput" accept="video/*" />
+          <button id="analyzeBtn">Analyze File</button>
+        </div>
+
+        <div id="url" class="tab-panel hidden">
+          <h3>Enter YouTube URL</h3>
+          <input
+            type="text"
+            id="urlInput"
+            placeholder="https://www.youtube.com/watch?v=..."
+          />
+
+          <div class="toggle-container">
+            <input type="checkbox" id="clipToggleCheckbox" />
+            <label for="clipToggleCheckbox">Analyze Specific Clip?</label>
+          </div>
+
+          <div id="timeInputsWrapper" class="hidden">
+            <div class="time-inputs">
+              <input
+                type="text"
+                id="startTimeInput"
+                placeholder="Start (e.g., 01:30)"
+              />
+              <input
+                type="text"
+                id="endTimeInput"
+                placeholder="End (e.g., 01:45)"
+              />
+            </div>
+            <p class="time-inputs-desc">
+            </p>
+          </div>
+          <button id="urlAnalyzeBtn">Analyze URL</button>
+        </div>
+      </div>
+
+      <section id="result-section" class="hidden">
+        <h2>Result</h2>
+        <div id="loading" class="hidden">
+          <div class="spinner"></div>
+          <p>Analyzing... This may take a while.</p>
+        </div>
+        <div id="result-box"></div>
+      </section>
+    </main>
+
+    <footer>
+      <p>© 2025 DeepFake Detector by YJ57</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  </body>
+</html>
