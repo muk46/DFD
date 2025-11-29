@@ -68,17 +68,8 @@ def multiple_lists_mean(a):
 # Aggregate space and time attention 
 def aggregate_attentions(attentions, num_heads, num_frames, frames_per_identity):
     """Aggregates the attentions from the different heads and layers."""
-    # attentions는 [space_attention, time_attention] 리스트.
-    # 마지막 어텐션인 time_attention을 사용.
-    # time_attention의 shape는 (num_heads, 1, num_tokens) 형태의 3D 텐서.
     
-    # ✨✨✨ 여기가 수정된 핵심 부분! ✨✨✨
-    # 3D 텐서에 맞게 인덱싱을 수정하여 "too many indices" 오류를 해결.
-    # CLS 토큰(인덱스 0)이 다른 모든 패치 토큰(인덱스 1부터)에 대해 갖는 어텐션 값을 추출.
-    attention_scores = attentions[-1][:, 0, 1:]  # (num_heads, num_patches)
-    
-    # 모든 헤드의 어텐션 점수를 평균내어 최종 어텐션 맵 생성.
-    attention_scores = torch.mean(attention_scores, dim=0)  # (num_patches)
+    attention_scores = torch.mean(attention_scores, dim=0)  
     
     num_patches_per_frame = attention_scores.shape[0] // num_frames
 
@@ -101,7 +92,6 @@ def aggregate_attentions(attentions, num_heads, num_frames, frames_per_identity)
         identity_attn = attention_scores[start_patch_idx:end_patch_idx]
         
         if identity_attn.numel() > 0:
-            # 각 identity(얼굴)에 대한 평균 어텐션 값 계산
             identity_attentions.append(identity_attn.mean().item())
         else:
             identity_attentions.append(0.0)
@@ -110,8 +100,6 @@ def aggregate_attentions(attentions, num_heads, num_frames, frames_per_identity)
 
     aggregated_attentions = attention_scores.cpu().numpy()
     
-    # aggregated_attentions: 전체 패치에 대한 1D 어텐션 배열
-    # identity_attentions: 각 얼굴(identity)별 평균 어텐션 스코어 리스트
     return heatmap_per_frame, identity_attentions
 
 
@@ -134,10 +122,8 @@ def save_attention_plots(attention, identity_names, frames_per_identity, num_fra
         ax.set_xticks(list(range(num_frames)))
         ax.set_xticklabels(list(range(1, num_frames + 1)))
 
-    # 저장 경로를 'xai_results'로 분리
     file_path = f"xai_results/tokens/{video_name}_{suffix}.jpg"
     
-    # 폴더가 없으면 자동으로 생성
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     
     plt.savefig(file_path)
@@ -169,13 +155,8 @@ def draw_border(img, pt1, pt2, color, thickness, r, d):
     cv2.ellipse(img, (x2 - r, y2 - r), (r, r), 0, 0, 90, color, thickness)
     return img
 
-
-
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-
 
 SLOWFAST_ALPHA = 4
 
