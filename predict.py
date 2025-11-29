@@ -27,10 +27,7 @@ from transforms.albu import IsotropicResize
 from models.size_invariant_timesformer import SizeInvariantTimeSformer
 from utils import aggregate_attentions, draw_border, save_attention_plots
 
-
-# ----------------------------------------
 # 전역 디바이스 설정
-# ----------------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def identity_collate_fn(x):
@@ -41,11 +38,7 @@ def identity_collate_fn(x):
 RANGE_SIZE = 5
 SIZE_EMB_DICT = [(1+i*RANGE_SIZE, (i+1)*RANGE_SIZE) if i != 0 else (0, RANGE_SIZE) for i in range(20)]
 
-# ----------------------------------------
-# 1) 얼굴 탐지
-# ----------------------------------------
-# predict.py 파일의 detect_faces 함수
-
+# 1. 얼굴 탐지
 def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
     """
     비디오에서 YOLOv8-face 기반으로 얼굴 박스를 탐지.
@@ -56,10 +49,7 @@ def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
     else:
         device_for_detector = torch.device("cpu")
             
-    # ✅ 수정된 부분: opt.gpu_id 대신 device_for_detector를 전달합니다.
     detector = face_detector.__dict__[detector_cls](device=device_for_detector)
-    
-    # 비디오 로딩 (VideoDataset은 내부에서 640x480로 리사이즈하여 PIL Image 리스트 제공)
     dataset = VideoDataset([video_path])
     loader = DataLoader(dataset, shuffle=False, num_workers=0, batch_size=1, collate_fn=identity_collate_fn)
     
@@ -67,20 +57,16 @@ def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
     for item in loader:
         bboxes = {}
         video, indices, fps, frames = item[0]
-        # indices: 원본 프레임 인덱스 리스트(int), frames: PIL 이미지(640x480)
-        detections = detector._detect_faces(frames)  # 각 프레임별 박스 리스트 또는 None
+        detections = detector._detect_faces(frames)  
         bboxes.update({i: b for i, b in zip(indices, detections)})
         
-        # 한 프레임이라도 리스트(검출 존재)인지 확인
         found_faces = any(isinstance(bboxes[k], list) and len(bboxes[k]) > 0 for k in bboxes)
         if not found_faces:
             raise Exception("No faces found.")
             
     return bboxes
-
-# ----------------------------------------
-# 2) 얼굴 크롭 추출 (원본 프레임에서 정확한 스케일로)
-# ----------------------------------------
+    
+# 2. 얼굴 크롭 
 def extract_crops(video_path, bboxes_dict):
     """
     YOLO가 본 프레임은 640x480. 원본 프레임 해상도와 다르므로,
@@ -103,9 +89,8 @@ def extract_crops(video_path, bboxes_dict):
     crops = []
     explored_indexes = []
 
-    # 초당 1장 간격으로 샘플링 (fps 간격)
+    # 초당 1장 간격으로 샘플링 
     for i in range(0, len(frames), max(fps, 1)):
-        # 해당 초 구간 내에서 탐지된 프레임을 찾는다
         while i not in bboxes_dict:
             if i >= frames_num - 1:
                 i = frames_num - 1
@@ -118,29 +103,25 @@ def extract_crops(video_path, bboxes_dict):
         limit = min(i + max(fps, 1) - 1, frames_num - 1)
         keys = list(bboxes_dict.keys())
 
-        # 같은 초 구간에서 탐지된 가장 가까운 프레임 찾기
         while index < limit:
             index += 1
             if index in keys and bboxes_dict[index] is not None and len(bboxes_dict[index]) > 0:
                 break
         if index == limit:
             continue
-
-        # 탐지 박스(640x480 기준) → 원본 해상도 스케일 보정
-        bboxes_small = bboxes_dict[index]  # xyxy
+            
+        bboxes_small = bboxes_dict[index]  
         H, W = frame.shape[:2]
         sx = W / 640.0
         sy = H / 480.0
 
         for bbox in bboxes_small:
-            # YOLO 출력은 float 좌표. 원본 크기로 변환
             x1, y1, x2, y2 = bbox
             xmin = int(round(x1 * sx))
             ymin = int(round(y1 * sy))
             xmax = int(round(x2 * sx))
             ymax = int(round(y2 * sy))
 
-            # 패딩을 추가하여 배경 일부 포함 (안정성↑)
             w = xmax - xmin
             h = ymax - ymin
             p_h = h // 3
@@ -153,7 +134,6 @@ def extract_crops(video_path, bboxes_dict):
 
             crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
 
-            # 정사각형 보정
             ch, cw = crop.shape[:2]
             if ch > cw:
                 diff = (ch - cw) // 2
@@ -162,26 +142,16 @@ def extract_crops(video_path, bboxes_dict):
                 diff = (cw - ch) // 2
                 crop = crop[:, diff:diff+ch]
 
-            # BGR → RGB, PIL 변환
             crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             crops.append((i, Image.fromarray(crop_rgb), [xmin, ymin, xmax, ymax]))
 
     return crops
-
-# ----------------------------------------
-# 3) 얼굴 클러스터링 (동일 인물 묶기)
-# ----------------------------------------
+# 3. 얼굴 클러스트링링
 def cluster_faces(crops, valid_cluster_size_ratio=0.20, similarity_threshold=0.45):
-    """
-    얼굴 크롭들에 대해 InceptionResnetV1 임베딩 후, 유사도 그래프의
-    연결요소를 이용해 동일 인물 클러스터를 생성한다.
-    반환: {identity_idx: [(frame_idx, PIL, bbox), ...], ...}
-    """
     crops_images = [row[1] for row in crops]
     if not crops_images:
         raise Exception("No face crops available for clustering.")
 
-    # 얼굴 임베딩 추출
     embeddings_extractor = InceptionResnetV1(pretrained='vggface2').eval().to(device)
     faces = [preprocess_images(face) for face in crops_images]
     faces = np.stack([np.uint8(face) for face in faces])
@@ -189,7 +159,6 @@ def cluster_faces(crops, valid_cluster_size_ratio=0.20, similarity_threshold=0.4
     faces = fixed_image_standardization(faces)
     embeddings = embeddings_extractor(faces.to(device)).detach().cpu().numpy()
 
-    # 유사도 행렬 → 연결요소
     similarities = np.dot(embeddings, embeddings.T)
     components = _generate_connected_components(similarities, similarity_threshold=similarity_threshold)
     components = [sorted(component) for component in components]
@@ -202,18 +171,13 @@ def cluster_faces(crops, valid_cluster_size_ratio=0.20, similarity_threshold=0.4
     return clustered_faces
 
 def get_identity_information(identity, faces):
-    """각 identity에 대해: [identity_id, 평균크롭사이즈, 얼굴개수, 얼굴리스트]"""
     mean_side = mean([row[1].size[0] for row in faces])
     number_of_faces = len(faces)
     return [identity, mean_side, number_of_faces, faces]
 
 def get_sorted_identities(identities, discarded_faces, max_identities=2, num_frames=16):
-    """
-    인물별 얼굴 개수를 num_frames에 맞추어 재분배.
-    가장 큰 얼굴(사이즈) 우선, 부족 시 dummy 채우기.
-    """
     sorted_identities = []
-    discarded_faces = []  # 현재 사용하지 않음 (인터페이스 유지)
+    discarded_faces = [] 
 
     for identity in identities:
         sorted_identities.append(get_identity_information(identity, identities[identity]))
@@ -221,7 +185,6 @@ def get_sorted_identities(identities, discarded_faces, max_identities=2, num_fra
     if len(sorted_identities) == 0:
         return sorted_identities, discarded_faces
 
-    # 큰 얼굴(사이즈) 우선 정렬
     sorted_identities = sorted(sorted_identities, key=lambda x: x[1], reverse=True)
     if len(sorted_identities) > max_identities:
         sorted_identities = sorted_identities[:max_identities]
@@ -230,7 +193,6 @@ def get_sorted_identities(identities, discarded_faces, max_identities=2, num_fra
     available_additional_faces = []
 
     if identities_number > 1:
-        # 인물 수에 따른 프레임 분배 규칙
         max_faces_per_identity = {
             1: [num_frames],
             2: [num_frames // 2, num_frames // 2],
@@ -250,11 +212,9 @@ def get_sorted_identities(identities, discarded_faces, max_identities=2, num_fra
             else:
                 available_additional_faces.append(0)
     else:
-        # 인물이 1명인 경우 전체 프레임 할당
         sorted_identities[0][2] = num_frames
         available_additional_faces.append(0)
 
-    # 분배 후 총 프레임 부족 시 앞 인물에서 추가 차출
     input_len = sum(n for _, _, n, _ in sorted_identities)
     if input_len < num_frames:
         for i in range(identities_number):
@@ -265,16 +225,15 @@ def get_sorted_identities(identities, discarded_faces, max_identities=2, num_fra
                 input_len += add
                 if input_len == num_frames:
                     break
-        # 그래도 부족하면 마지막 인물에 dummy 채워 넣기
+
         if input_len < num_frames:
             need = num_frames - input_len
             sorted_identities[-1][2] += need
 
     return sorted_identities, discarded_faces
 
-# ----------------------------------------
-# 4) 모델 입력 마스크/시퀀스 생성
-# ----------------------------------------
+
+# 4. 모델 입력 마스크/시퀀스 생성
 def create_val_transform(size, additional_targets):
     """TimeSformer 입력 크기에 맞게 등방성 리사이즈 + 패딩"""
     return Compose([
@@ -284,10 +243,6 @@ def create_val_transform(size, additional_targets):
     ], additional_targets=additional_targets)
 
 def generate_masks(video_path, identities, discarded_faces, num_frames, image_size, num_patches):
-    """
-    아이덴티티별로 선택된 이미지들을 시간 순서대로 나열하고,
-    마스크(유효프레임), 아이덴티티 마스크, 토큰 포지션 등을 생성.
-    """
     mask = []
     sequence = []
     size_embeddings = []
@@ -297,7 +252,6 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
         max_faces = identity[2]
         identity_images = identity[3][:]
 
-        # 필요 개수만 균등 샘플링
         if len(identity_images) > max_faces:
             idx = np.round(np.linspace(0, len(identity_images) - 2, max_faces)).astype(int)
             identity_images = [identity_images[i] for i in idx]
@@ -318,7 +272,6 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
             side_ranges = list(map(lambda a_: ratio in range(a_[0], a_[1] + 1), SIZE_EMB_DICT))
             identity_size_embeddings.append(np.where(side_ranges)[0][0] + 1)
 
-        # 부족 시 dummy 이미지/마스크 0
         if len(identity_images) < max_faces:
             diff = max_faces - len(identity_size_embeddings)
             identity_size_embeddings = np.concatenate((identity_size_embeddings, np.zeros(diff)))
@@ -331,14 +284,12 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
         size_embeddings.extend(identity_size_embeddings)
         sequence.extend(identity_images)
 
-    # albumentations 입력 준비
     sequence = [np.asarray(image) for image in sequence]
     additional_keys = [f"image{i if i > 0 else ''}" for i in range(num_frames)]
     transform = create_val_transform(image_size, {k: "image" for k in additional_keys})
     transformed = transform(**{k: sequence[i] for i, k in enumerate(additional_keys)})
     sequence = [transformed[k] for k in additional_keys]
 
-    # 아이덴티티 마스크 (time × time)
     identities_mask = []
     position = 0
     for identity in identities:
@@ -356,7 +307,6 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
     elif len(identities_mask) > num_frames:
         identities_mask = identities_mask[:num_frames]
 
-    # 포지션 인덱스 (프레임별 패치 시작~끝 범위)
     images_frames_positions = {k: v+1 for v, k in enumerate(sorted(set(images_frames)))}
     frame_positions = [images_frames_positions[frame] for frame in images_frames]
     positions = []
@@ -365,7 +315,7 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
         end_idx = start_idx + num_patches
         positions.extend(range(start_idx, end_idx))
     if num_patches is not None:
-        positions.insert(0, 0)  # [CLS] 토큰 등용
+        positions.insert(0, 0)  
 
     tokens_per_identity = []
     for i in range(len(identities)):
@@ -381,9 +331,8 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
             torch.tensor([positions]),
             tokens_per_identity)
 
-# ----------------------------------------
-# 5) 모델/특징추출기 로드 (1회)
-# ----------------------------------------
+
+# 5. 모델/특징추출기 로드
 class TimmFeatureExtractor(torch.nn.Module):
     """timm EfficientNetV2-S를 (B,C,H,W)→(B,C',H',W') 특성맵으로 반환하도록 래핑"""
     def __init__(self, model_name='tf_efficientnetv2_s_in21k', pretrained=True):
@@ -403,16 +352,11 @@ def load_models(opt, config=None, device_override=None):
         with open(opt.config, "r") as f:
             config = yaml.safe_load(f)
 
-    # ✨✨✨ 여기가 수정된 핵심 부분! ✨✨✨
-    # 특징추출기는 항상 ImageNet-21k 사전 훈련 가중치를 사용하도록 고정합니다.
     print("Loading pre-trained ImageNet-21k weights for the extractor.")
     feat = TimmFeatureExtractor('tf_efficientnetv2_s_in21k', pretrained=True).to(dev).eval()
-    # ✨✨✨ 여기까지 수정 ✨✨✨
 
-    # 메인 모델: SizeInvariantTimeSformer
     mdl = SizeInvariantTimeSformer(config=config, require_attention=True).to(dev).eval()
 
-    # 저희가 훈련시킨 메인 모델(TimeSformer)의 가중치를 불러옵니다.
     if not os.path.exists(opt.model_weights):
         raise Exception(f"TimeSformer weights not found at: {opt.model_weights}")
     print(f"Loading TimeSformer weights from: {opt.model_weights}")
@@ -425,11 +369,7 @@ def load_models(opt, config=None, device_override=None):
     return mdl, feat, config, dev
 
 
-# ----------------------------------------
 # 6) 추론
-# ----------------------------------------
-# predict.py의 predict 함수 부분을 이 코드로 교체해주세요.
-
 def predict(video_path, crops, config, opt, model=None, features_extractor=None, device_override=None):
     """
     추론 진입점.
@@ -443,16 +383,12 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
 
     num_patches = config['model']['num-patches']
 
-    # 얼굴 클러스터링 → 아이덴티티 정렬
     clustered_faces = cluster_faces(crops)
     identities, discarded_faces = get_sorted_identities(clustered_faces, None, num_frames=config['model']['num-frames'])
     
-    # get_sorted_identities가 반환한 최종 프레임 리스트와 바운딩 박스를 가져옵니다.
     frames_list = [[face[0] for face in identity[3]] for identity in identities]
     bboxes = [face[2] for identity in identities for face in identity[3]]
 
-
-    # 마스크/시퀀스 생성
     videos, size_embeddings, mask, identities_mask, positions, tokens_per_identity = generate_masks(
         video_path, identities, discarded_faces,
         config["model"]["num-frames"], config["model"]["image-size"], num_patches
@@ -462,12 +398,10 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
     videos = videos.to(dev)
 
     with torch.no_grad():
-        # (B,F,H,W,C) → (B*F,C,H,W)
         video = rearrange(videos, "b f h w c -> (b f) c h w").to(dev)
         features = features_extractor(video)
         features = rearrange(features, '(b f) c h w -> b f c h w', b=b, f=f)
         
-        # 모델 실행하여 예측값과 어텐션 스코어를 받음
         test_pred, attentions = model(
             features, 
             mask=mask.to(dev), 
@@ -476,9 +410,6 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
             positions=positions.to(dev)
         )
 
-        # ✨✨✨ 여기가 핵심 수정 부분! ✨✨✨
-        # utils.py의 함수를 호출하여 어텐션 스코어를 실제 히트맵 데이터로 가공합니다.
-        # opt.save_attentions 조건문 없이 항상 실행하여 app.py에 데이터를 제공합니다.
         heatmap_per_frame, _ = aggregate_attentions(
             attentions=attentions,
             num_heads=config['model']['heads'],
@@ -486,18 +417,14 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
             frames_per_identity=[int(row[1] / num_patches) for row in tokens_per_identity]
         )
 
-        # 최종적으로 app.py가 필요한 모든 정보를 반환합니다.
         return (
             torch.sigmoid(test_pred[0]).item(), 
-            heatmap_per_frame.cpu().numpy(), # 실제 히트맵 데이터
+            heatmap_per_frame.cpu().numpy(), 
             identities, 
             frames_list, 
             bboxes
         )
 
-# ----------------------------------------
-# 7) 결과 비디오 생성 (옵션)
-# ----------------------------------------
 def get_identities_bboxes(identities):
     """아이덴티티별 프레임-박스 매핑 생성"""
     identities_bboxes = {}
@@ -563,9 +490,6 @@ def generate_output_video(video_path, pred, identity_attentions, aggregated_atte
     output.release()
     cap.release()
 
-# ----------------------------------------
-# 8) 스크립트 단독 실행 (디버그/테스트용)
-# ----------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_path', type=str, required=True, help='입력 비디오 경로')
