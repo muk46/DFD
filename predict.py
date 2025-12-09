@@ -31,7 +31,6 @@ from utils import aggregate_attentions, draw_border, save_attention_plots
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def identity_collate_fn(x):
-    """DataLoader에서 (비디오 단건) 튜플을 그대로 받기 위한 collate_fn"""
     return x
 
 # 사이즈 임베딩 구간 테이블
@@ -40,10 +39,7 @@ SIZE_EMB_DICT = [(1+i*RANGE_SIZE, (i+1)*RANGE_SIZE) if i != 0 else (0, RANGE_SIZ
 
 # 1. 얼굴 탐지
 def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
-    """
-    비디오에서 YOLOv8-face 기반으로 얼굴 박스를 탐지.
-    반환: {프레임인덱스(int): [[x1,y1,x2,y2], ...] 또는 None}
-    """
+
     if torch.cuda.is_available() and opt.gpu_id >= 0:
         device_for_detector = torch.device(f"cuda:{opt.gpu_id}")
     else:
@@ -68,11 +64,7 @@ def detect_faces(video_path, detector_cls: Type[VideoFaceDetector], opt):
     
 # 2. 얼굴 크롭 
 def extract_crops(video_path, bboxes_dict):
-    """
-    YOLO가 본 프레임은 640x480. 원본 프레임 해상도와 다르므로,
-    박스를 원본 해상도에 맞게 스케일링 후 크롭을 수행한다.
-    반환: [(원본프레임idx, PIL.Image(crop), 원본스케일 bbox), ...]
-    """
+
     frames = []
     cap = cv2.VideoCapture(video_path)
     frames_num = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -235,7 +227,6 @@ def get_sorted_identities(identities, discarded_faces, max_identities=2, num_fra
 
 # 4. 모델 입력 마스크/시퀀스 생성
 def create_val_transform(size, additional_targets):
-    """TimeSformer 입력 크기에 맞게 등방성 리사이즈 + 패딩"""
     return Compose([
         IsotropicResize(max_side=size, interpolation_down=cv2.INTER_AREA, interpolation_up=cv2.INTER_CUBIC),
         PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),
@@ -334,7 +325,6 @@ def generate_masks(video_path, identities, discarded_faces, num_frames, image_si
 
 # 5. 모델/특징추출기 로드
 class TimmFeatureExtractor(torch.nn.Module):
-    """timm EfficientNetV2-S를 (B,C,H,W)→(B,C',H',W') 특성맵으로 반환하도록 래핑"""
     def __init__(self, model_name='tf_efficientnetv2_s_in21k', pretrained=True):
         super().__init__()
         self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0, global_pool='')
@@ -343,22 +333,21 @@ class TimmFeatureExtractor(torch.nn.Module):
         return self.backbone.forward_features(x)
 
 def load_models(opt, config=None, device_override=None):
-    """
-    모델과 특징추출기를 로드하여 (모델, 특징추출기, config, device) 반환.
-    """
     dev = device_override if device_override is not None else device
 
     if config is None:
         with open(opt.config, "r") as f:
             config = yaml.safe_load(f)
 
-    print("Loading pre-trained ImageNet-21k weights for the extractor.")
+    # 1. 특징 추출기(Extractor) 로드
     feat = TimmFeatureExtractor('tf_efficientnetv2_s_in21k', pretrained=True).to(dev).eval()
 
+    # 2. 메인 모델(TimeSformer) 로드
     mdl = SizeInvariantTimeSformer(config=config, require_attention=True).to(dev).eval()
 
     if not os.path.exists(opt.model_weights):
         raise Exception(f"TimeSformer weights not found at: {opt.model_weights}")
+        
     print(f"Loading TimeSformer weights from: {opt.model_weights}")
     state_dict = torch.load(opt.model_weights, map_location='cpu')
 
@@ -366,17 +355,13 @@ def load_models(opt, config=None, device_override=None):
         state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
 
     mdl.load_state_dict(state_dict, strict=False)
+    
     return mdl, feat, config, dev
 
 
 # 6) 추론
 def predict(video_path, crops, config, opt, model=None, features_extractor=None, device_override=None):
-    """
-    추론 진입점.
-    - app.py에서는 (사전로드된) model/features_extractor/device를 전달
-    - 단독 실행 시 None → 내부에서 load_models() 호출
-    반환: (pred_score, heatmap_data, identities, frames_list, bboxes)
-    """
+    
     dev = device_override if device_override is not None else device
     if model is None or features_extractor is None:
         model, features_extractor, config, dev = load_models(opt, config=config, device_override=dev)
@@ -426,7 +411,6 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
         )
 
 def get_identities_bboxes(identities):
-    """아이덴티티별 프레임-박스 매핑 생성"""
     identities_bboxes = {}
     for row in identities:
         identity = row[3]
@@ -439,7 +423,6 @@ def get_identities_bboxes(identities):
     return identities_bboxes
 
 def generate_output_video(video_path, pred, identity_attentions, aggregated_attentions, identities, frames_per_identity):
-    """탐지 결과를 원본 영상에 오버레이하여 저장"""
     identities_bboxes = get_identities_bboxes(identities)
     available_frames_keys = [frame for frame in identities_bboxes]
 
