@@ -20,7 +20,7 @@ from predict import (
 # 설정값 정의
 args = argparse.Namespace(
     config='config/size_invariant_timesformer.yaml',
-    model_weights="C:\\Users\\muk46\\Desktop\\DFD\\outputs\\models\\Model_checkpoint10.pth",
+    model_weights="outputs/models/Model_checkpoint10.pth",
     extractor_weights=None,
     detector_type='FacenetDetector',
     gpu_id=0,
