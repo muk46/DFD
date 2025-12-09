@@ -21,7 +21,7 @@ from predict import (
 args = argparse.Namespace(
     config='config/size_invariant_timesformer.yaml',
     model_weights="C:\\Users\\muk46\\Desktop\\DFD\\outputs\\models\\Model_checkpoint10.pth",
-    extractor_weights="C:\\Users\\muk46\\Desktop\\DFD\\outputs\\models\\Extractor_checkpoint10.pth",
+    extractor_weights=None,
     detector_type='FacenetDetector',
     gpu_id=0,
 )
