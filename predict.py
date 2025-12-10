@@ -12,6 +12,9 @@ from einops import rearrange
 
 import torch
 import timm
+
+from utils import aggregate_attentions, draw_border, save_attention_plots, save_explanation_image
+import uuid 
 from torch.utils.data.dataloader import DataLoader
 
 # 프로젝트 모듈
@@ -341,6 +344,19 @@ def load_models(opt, config=None, device_override=None):
 
     # 1. 특징 추출기(Extractor) 로드
     feat = TimmFeatureExtractor('tf_efficientnetv2_s_in21k', pretrained=True).to(dev).eval()
+    if hasattr(opt, 'extractor_weights') and opt.extractor_weights is not None:
+        if os.path.exists(opt.extractor_weights):
+            print(f"Loading Feature Extractor weights from: {opt.extractor_weights}")
+            ext_checkpoint = torch.load(opt.extractor_weights, map_location='cpu')
+            
+            if next(iter(ext_checkpoint.keys())).startswith("module."):
+                ext_checkpoint = {k.replace("module.", "", 1): v for k, v in ext_checkpoint.items()}
+                
+            # 가중치 적용 
+            feat.load_state_dict(ext_checkpoint, strict=False)
+            print("Feature Extractor weights loaded successfully.")
+        else:
+            print(f"Warning: Extractor weights file not found at {opt.extractor_weights}")
 
     # 2. 메인 모델(TimeSformer) 로드
     mdl = SizeInvariantTimeSformer(config=config, require_attention=True).to(dev).eval()
@@ -395,19 +411,66 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
             positions=positions.to(dev)
         )
 
-        heatmap_per_frame, _ = aggregate_attentions(
+        heatmap_per_frame, attention_scores = aggregate_attentions(
             attentions=attentions,
             num_heads=config['model']['heads'],
             num_frames=config['model']['num-frames'],
             frames_per_identity=[int(row[1] / num_patches) for row in tokens_per_identity]
         )
+        
+        xai_result_path = None # 초기값
+
+        if identities and len(identities) > 0:
+            # 1. 가장 많이 등장한 인물의 얼굴 데이터 가져오기
+            faces_data = identities[0][3]
+            
+            # 히트맵 데이터를 numpy로 변환 
+            if isinstance(heatmap_per_frame, torch.Tensor):
+                heatmaps_np = heatmap_per_frame.cpu().numpy()
+            else:
+                heatmaps_np = heatmap_per_frame
+
+            if faces_data and len(faces_data) > 0:
+                # 모델이 처리한 프레임들 중에서 가장 Attention 값이 높은 프레임을 찾기
+                
+                best_idx = 0
+                max_intensity = -1.0
+                
+                # 데이터 개수 불일치 방지를 위해 최소 길이만큼만 반복
+                num_check = min(len(faces_data), len(heatmaps_np))
+                
+                for i in range(num_check):
+                    # 해당 프레임 히트맵의 최대값을 구함
+                    current_max = np.max(heatmaps_np[i])
+                    
+                    if current_max > max_intensity:
+                        max_intensity = current_max
+                        best_idx = i
+                
+                print(f"-> XAI 분석 결과: {best_idx}번째 프레임이 가장 의심스럽습니다. (강도: {max_intensity:.4f})")
+
+                # 3. 선정된 '베스트 프레임'의 이미지와 히트맵 선택
+                best_face_image = faces_data[best_idx][1]
+                
+                best_heatmap_data = [heatmaps_np[best_idx]] 
+
+                # 4. 이미지 저장
+                filename = f"xai_{uuid.uuid4().hex[:8]}.jpg"
+                save_full_path = os.path.join("static", "results", filename)
+                
+                save_explanation_image(best_heatmap_data, best_face_image, save_full_path)
+                
+                # 웹에서 접근할 경로 저장
+                xai_result_path = f"static/results/{filename}"
+
 
         return (
             torch.sigmoid(test_pred[0]).item(), 
+            attention_scores,                 
             heatmap_per_frame.cpu().numpy(), 
             identities, 
-            frames_list, 
-            bboxes
+            frames_list,
+            xai_result_path  
         )
 
 def get_identities_bboxes(identities):
