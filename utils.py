@@ -69,13 +69,25 @@ def multiple_lists_mean(a):
 def aggregate_attentions(attentions, num_heads, num_frames, frames_per_identity):
     """Aggregates the attentions from the different heads and layers."""
     
-    attention_scores = torch.mean(attention_scores, dim=0)  
+    # 1. 리스트 입력 처리 (Layer별 Attention들을 하나로 쌓기)
+    if isinstance(attentions, (list, tuple)):
+        attentions = torch.stack(attentions)
+
+    # 2. [수정 핵심] 입력 변수 'attentions'를 사용해서 평균을 구해야 함 (이전 코드 에러 원인 해결)
+    attention_scores = torch.mean(attentions, dim=0)
+
+    # 3. 1차원(Tokens)으로 차원 축소
+    if attention_scores.dim() > 1:
+        attention_scores = torch.mean(attention_scores, dim=tuple(range(attention_scores.dim() - 1)))
     
+    # 4. CLS 토큰 제거 (393 -> 392 에러 방지)
+    if attention_scores.shape[0] % num_frames != 0:
+        attention_scores = attention_scores[1:]
+
     num_patches_per_frame = attention_scores.shape[0] // num_frames
 
     w = h = int(np.sqrt(num_patches_per_frame))
     heatmap_per_frame = rearrange(attention_scores, '(f h w) -> f h w', f=num_frames, h=h, w=w)
-
     
     identity_attentions = []
     start_frame_idx = 0
@@ -92,14 +104,12 @@ def aggregate_attentions(attentions, num_heads, num_frames, frames_per_identity)
         identity_attn = attention_scores[start_patch_idx:end_patch_idx]
         
         if identity_attn.numel() > 0:
-            identity_attentions.append(identity_attn.mean().item())
+            identity_attentions.append(identity_attn.mean().detach().cpu().numpy())
         else:
-            identity_attentions.append(0.0)
+            identity_attentions.append(np.array(0.0, dtype=np.float32))
             
         start_frame_idx = end_frame_idx
 
-    aggregated_attentions = attention_scores.cpu().numpy()
-    
     return heatmap_per_frame, identity_attentions
 
 
@@ -201,3 +211,40 @@ def slowfast_input_transform(videos, crop_size = 256, side_size = 256, num_frame
     
         
     return transformed_videos
+
+def save_explanation_image(heatmap_data, original_image, output_path):
+    """
+    3단계 최종: 히트맵을 원본과 겹쳐서 지정된 경로(output_path)에 저장합니다.
+    """
+    import cv2
+    import numpy as np
+    import os
+
+    # 1. 첫 번째 프레임 히트맵 추출 & 정규화
+    first_frame_map = heatmap_data[0] 
+    norm_map = cv2.normalize(first_frame_map, None, 0, 255, cv2.NORM_MINMAX)
+    norm_map = np.uint8(norm_map)
+
+    # 2. 원본 이미지 처리
+    if not isinstance(original_image, np.ndarray):
+        original_image = np.array(original_image)
+    
+    # RGB -> BGR 변환 (OpenCV 호환)
+    if original_image.shape[-1] == 3:
+        original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2BGR)
+
+    h, w = original_image.shape[:2]
+
+    # 3. 히트맵 확대 및 컬러 입히기
+    resized_map = cv2.resize(norm_map, (w, h), interpolation=cv2.INTER_CUBIC)
+    color_map = cv2.applyColorMap(resized_map, cv2.COLORMAP_JET)
+
+    # 4. 겹치기 (Overlay)
+    overlay = cv2.addWeighted(original_image, 0.6, color_map, 0.4, 0)
+
+    # 5. 지정된 경로에 저장
+    # 폴더가 없으면 생성
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    cv2.imwrite(output_path, overlay)
+    
+    return output_path
