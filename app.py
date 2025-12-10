@@ -21,7 +21,7 @@ from predict import (
 args = argparse.Namespace(
     config='config/size_invariant_timesformer.yaml',
     model_weights="outputs/models/Model_checkpoint10.pth",
-    extractor_weights=None,
+    extractor_weights="outputs/models/Extractor_checkpoint10.pth",
     detector_type='FacenetDetector',
     gpu_id=0,
 )
@@ -67,14 +67,14 @@ def handle_prediction():
         bboxes_dict = detect_faces(video_path, args.detector_type, args)
         crops = extract_crops(video_path, bboxes_dict)
 
-        pred_score, _, _, _, _ = predict(
+        pred_score, _, _, _, _, xai_path = predict(
             video_path, crops, config, args,
             model=model, features_extractor=features_extractor, device_override=device
         )
-
         result = {
             "prediction": float(pred_score),
-            "is_fake": bool(pred_score > 0.97)
+            "is_fake": bool(pred_score > 0.97),
+            "xai_image": xai_path if xai_path else None  # [추가] 이미지 경로 전달
         }
         return jsonify(result), 200
 
