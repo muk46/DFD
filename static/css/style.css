@@ -1,0 +1,197 @@
+/* 기본 스타일 초기화 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: "Noto Sans KR", sans-serif;
+}
+
+body {
+  background-color: #0f172a;
+  color: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  /* 푸터가 겹치지 않도록 하단 여백 추가 */
+  padding-bottom: 80px; 
+}
+
+/* 헤더 */
+header {
+  text-align: center;
+  margin-top: 60px;
+}
+header h1 {
+  font-size: 2.5rem;
+  color: #38bdf8;
+}
+header p {
+  color: #cbd5e1;
+  margin-top: 10px;
+}
+
+/*  탭 네비게이션  */
+.tab-nav {
+  display: flex;
+  gap: 5px; /* 버튼 사이 간격 */
+  background-color: #1e293b; /* 탭 배경 (어두운 배경) */
+  padding: 5px;
+  border-radius: 8px;
+  margin-top: 40px;
+  width: 500px;
+  max-width: 90%;
+}
+/*  개별 탭 버튼 */
+.tab-btn {
+  flex: 1; /* 1:1 비율로 버튼 너비 균등하게 */
+  background-color: transparent; /* 기본은 투명 */
+  color: #cbd5e1; /* 기본 글자색 (흐린 흰색) */
+  padding: 12px 16px;
+  border-radius: 6px; /* 둥근 모서리 */
+  border: none;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 1rem;
+  transition: background-color 0.2s, color 0.2s;
+}
+/*  활성화된 탭 버튼 스타일 */
+.tab-btn.active {
+  background-color: #38bdf8; /* 활성 배경색 (파란색) */
+  color: #0f172a; /* 활성 글자색 (어두운 남색) */
+}
+/*  비활성 탭에 마우스 올렸을 때 */
+.tab-btn:not(.active):hover {
+  background-color: #334155; /* 살짝 어두운 배경 */
+}
+
+/*  탭 컨텐츠 (패널 영역) */
+.tab-content {
+  margin-top: 30px;
+  width: 500px;
+  max-width: 90%;
+}
+/*  탭 패널  */
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+.tab-panel h3 { /* 탭 패널 안의 H3 */
+  font-size: 1.2rem;
+  color: #cbd5e1;
+  text-align: center;
+  margin-bottom: 5px;
+}
+
+
+/*  파일/텍스트 입력창 공통 */
+input[type="file"],
+input[type="text"] {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #f1f5f9;
+  padding: 12px;
+  border-radius: 8px;
+  width: 100%;
+  font-size: 1rem;
+}
+/*  텍스트 입력창 placeholder */
+input[type="text"]::placeholder {
+  color: #64748b;
+}
+
+/*  탭 패널 내부의 'Analyze' 버튼 */
+.tab-panel button {
+  background-color: #38bdf8;
+  border: none;
+  color: #0f172a;
+  padding: 12px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: 0.2s;
+  font-weight: bold;
+  font-size: 1rem;
+  width: 100%;
+}
+.tab-panel button:hover {
+  background-color: #0ea5e9;
+}
+
+/*  결과 섹션 */
+#result-section {
+  margin-top: 40px;
+  text-align: center;
+  width: 500px;
+  max-width: 90%;
+}
+#result-section h2 {
+  font-size: 1.5rem;
+  color: #e2e8f0;
+}
+#result-box {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 20px;
+  margin-top: 10px;
+  min-height: 50px;
+  line-height: 1.6;
+  text-align: left; /* 결과 텍스트 좌측 정렬 */
+}
+.hidden {
+  display: none;
+}
+
+/*  로딩 스피너 */
+#loading {
+  text-align: center;
+  padding: 30px 0;
+}
+.spinner {
+  border: 8px solid #334155; /* 스피너 배경색 */
+  border-top: 8px solid #38bdf8; /* 스피너 하이라이트색 */
+  border-radius: 50%;
+  width: 60px;
+  height: 60px;
+  animation: spin 1.5s linear infinite;
+  margin: 0 auto 15px auto;
+}
+#loading p {
+  color: #cbd5e1;
+  font-size: 1.1rem;
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/*  결과 텍스트 색상 */
+.fake {
+  color: #f87171; /* Red */
+}
+.real {
+  color: #4ade80; /* Green */
+}
+.error {
+  color: #f87171; /* Red */
+}
+
+/*  결과 이미지 스타일 */
+#result-box img {
+  max-width: 100%;
+  height: auto;
+  margin-top: 15px;
+  border: 1px solid #334155;
+  border-radius: 4px;
+}
+
+/*  푸터  */
+footer {
+  /* position: absolute; 제거 */
+  margin-top: auto; /* flex container의 바닥으로 밀어내기 */
+  bottom: 20px;
+  font-size: 0.9rem;
+  color: #64748b;
+  padding-top: 40px; /* 컨텐츠와 간격 */
+  padding-bottom: 20px;
+}
