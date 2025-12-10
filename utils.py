@@ -229,7 +229,7 @@ def save_explanation_image(heatmap_data, original_image, output_path):
     if not isinstance(original_image, np.ndarray):
         original_image = np.array(original_image)
     
-    # RGB -> BGR 변환 (OpenCV 호환)
+    # RGB -> BGR 변환
     if original_image.shape[-1] == 3:
         original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2BGR)
 
@@ -239,11 +239,10 @@ def save_explanation_image(heatmap_data, original_image, output_path):
     resized_map = cv2.resize(norm_map, (w, h), interpolation=cv2.INTER_CUBIC)
     color_map = cv2.applyColorMap(resized_map, cv2.COLORMAP_JET)
 
-    # 4. 겹치기 (Overlay)
+    # 4. 겹치기 
     overlay = cv2.addWeighted(original_image, 0.6, color_map, 0.4, 0)
 
     # 5. 지정된 경로에 저장
-    # 폴더가 없으면 생성
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, overlay)
     
