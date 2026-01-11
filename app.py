@@ -9,6 +9,7 @@ import numpy as np
 from flask import Flask, render_template, request, jsonify, url_for
 from werkzeug.utils import secure_filename
 from youtube_downloader import download_youtube_video
+from predict import generate_face_analysis_results
 
 from predict import (
     detect_faces,
@@ -67,14 +68,24 @@ def handle_prediction():
         bboxes_dict = detect_faces(video_path, args.detector_type, args)
         crops = extract_crops(video_path, bboxes_dict)
 
-        pred_score, _, _, _, _, xai_path = predict(
+        pred_score, _, heatmap_per_frame, _, frames_list, _ = predict(
             video_path, crops, config, args,
             model=model, features_extractor=features_extractor, device_override=device
+        )
+        org_vid_name, map_vid_name, attention_graph_data = generate_face_analysis_results(
+            frames_list, 
+            heatmap_per_frame, 
+            app.config['RESULT_FOLDER'], 
+            unique_name
         )
         result = {
             "prediction": float(pred_score),
             "is_fake": bool(pred_score > 0.97),
-            "xai_image": xai_path if xai_path else None  # [추가] 이미지 경로 전달
+            # 얼굴만 잘린 영상 경로 반환
+            "face_org_video": url_for('static', filename=f'results/{org_vid_name}'), 
+            "face_map_video": url_for('static', filename=f'results/{map_vid_name}'),
+            # 그래프용 데이터 (배열)
+            "attention_graph": attention_graph_data 
         }
         return jsonify(result), 200
 
