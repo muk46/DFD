@@ -387,7 +387,7 @@ def predict(video_path, crops, config, opt, model=None, features_extractor=None,
     clustered_faces = cluster_faces(crops)
     identities, discarded_faces = get_sorted_identities(clustered_faces, None, num_frames=config['model']['num-frames'])
     
-    frames_list = [[face[0] for face in identity[3]] for identity in identities]
+    frames_list = [[face[1] for face in identity[3]] for identity in identities]
     bboxes = [face[2] for identity in identities for face in identity[3]]
 
     videos, size_embeddings, mask, identities_mask, positions, tokens_per_identity = generate_masks(
@@ -535,6 +535,94 @@ def generate_output_video(video_path, pred, identity_attentions, aggregated_atte
 
     output.release()
     cap.release()
+# predict.py 맨 아래에 추가
+
+def generate_face_analysis_results(frames_list, heatmap_per_frame, output_folder, filename_prefix):
+    """
+    [수정됨] 웹 브라우저 호환성을 위해 WebM(vp80) 포맷으로 영상 저장
+    """
+    import cv2
+    import numpy as np
+    import os
+
+    # 데이터 유효성 검사
+    if not frames_list or len(frames_list) == 0:
+        return None, None, []
+    
+    # 첫 번째 인물의 얼굴 리스트
+    face_frames = frames_list[0]
+    
+    if not face_frames or len(face_frames) == 0:
+        return None, None, []
+
+    # [기준 크기 설정] 첫 번째 프레임 기준
+    first_frame = np.array(face_frames[0])
+    
+    if len(first_frame.shape) == 3:
+        height, width, _ = first_frame.shape
+    elif len(first_frame.shape) == 2:
+        height, width = first_frame.shape
+    else:
+        return None, None, []
+
+    # 히트맵 데이터 준비
+    if hasattr(heatmap_per_frame, 'cpu'):
+        heatmaps_np = heatmap_per_frame.cpu().detach().numpy()
+    else:
+        heatmaps_np = heatmap_per_frame
+
+    # [핵심 수정 1] 확장자를 .webm으로 변경 (웹 호환성 최고)
+    org_video_name = f"face_org_{filename_prefix}.webm"
+    map_video_name = f"face_map_{filename_prefix}.webm"
+    
+    org_path = os.path.join(output_folder, org_video_name)
+    map_path = os.path.join(output_folder, map_video_name)
+
+    # VideoWriter 설정
+    fps = 8 
+    # [핵심 수정 2] 코덱을 vp80으로 변경 (크롬/엣지에서 100% 재생됨)
+    fourcc = cv2.VideoWriter_fourcc(*'vp80')
+    
+    out_org = cv2.VideoWriter(org_path, fourcc, fps, (width, height))
+    out_map = cv2.VideoWriter(map_path, fourcc, fps, (width, height))
+
+    attention_timeline = []
+    
+    # 프레임 수 맞추기
+    num_frames = min(len(face_frames), len(heatmaps_np))
+
+    for i in range(num_frames):
+        # 1. 원본 이미지 변환
+        frame = np.array(face_frames[i])
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        
+        # 프레임 크기 강제 통일
+        frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_CUBIC)
+        
+        # 2. 히트맵 가져오기
+        heatmap = heatmaps_np[i]
+        
+        # 3. 점수 계산
+        score = float(np.max(heatmap))
+        attention_timeline.append(score)
+
+        # 4. 히트맵 시각화 및 크기 맞춤
+        norm_map = cv2.normalize(heatmap, None, 0, 255, cv2.NORM_MINMAX)
+        norm_map = np.uint8(norm_map)
+        
+        resized_map = cv2.resize(norm_map, (width, height), interpolation=cv2.INTER_CUBIC)
+        color_map = cv2.applyColorMap(resized_map, cv2.COLORMAP_JET)
+        
+        # 5. 오버레이
+        overlay = cv2.addWeighted(frame, 0.6, color_map, 0.4, 0)
+
+        out_org.write(frame)
+        out_map.write(overlay)
+
+    out_org.release()
+    out_map.release()
+
+    return org_video_name, map_video_name, attention_timeline
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
